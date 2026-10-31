@@ -1,0 +1,15 @@
+[build]
+  publish = "public"
+  command = "echo 'sem etapa de build'"
+
+[functions]
+  directory = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA: qualquer rota do app abre o index
+[[redirects]]
+  from = "/app/*"
+  to = "/index.html"
+  status = 200

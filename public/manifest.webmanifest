@@ -1,0 +1,10 @@
+{
+  "name": "GMV Studio",
+  "short_name": "GMV Studio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EEF1F3",
+  "theme_color": "#22262B",
+  "lang": "pt-BR",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
