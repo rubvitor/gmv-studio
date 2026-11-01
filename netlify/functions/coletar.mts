@@ -22,6 +22,7 @@ export default async (req: Request, context: Context) => {
   } catch (e: any) {
     p.status = "erro"
     p.erro = String(e?.message || e)
+    console.error("[coleta] erro", p.id, p.link, p.erro)
     await produtos.salvar(p)
   }
 }

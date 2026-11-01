@@ -127,3 +127,10 @@ test("link curto → fotos, vídeos mais vistos, pacote e anúncio", async () =>
   assert.ok(p.fotos.some((f) => f.nome === "manual.jpg"))
   assert.equal(p.zip, undefined)
 })
+
+test("id do produto dentro do HTML", async () => {
+  const { idNoHtml } = await import("../netlify/lib/coleta.mts")
+  assert.equal(idNoHtml('<script>{"product_id":"1729587769570005671"}</script>'), "1729587769570005671")
+  assert.equal(idNoHtml('<link rel="canonical" href="https://www.tiktok.com/view/product/1729587769570005671">'), "1729587769570005671")
+  assert.equal(idNoHtml("<html>nada</html>"), undefined)
+})

@@ -40,23 +40,44 @@ export function extrairIdProduto(url: string): string | undefined {
   return m?.[1]
 }
 
+/** Id do produto escrito dentro do HTML da página (quando o endereço final não traz o id). */
+export function idNoHtml(html: string): string | undefined {
+  const m =
+    html.match(/"product_?id"\s*:\s*"?(\d{15,21})/i) ||
+    html.match(/\/(?:view\/)?product\/(\d{15,21})/) ||
+    html.match(/\/pdp\/[^"'\s]*?(\d{15,21})/)
+  return m?.[1]
+}
+
+const log = (...x: unknown[]) => console.log("[coleta]", ...x)
+
 /** Segue os redirecionamentos do link curto (vt.tiktok.com) até achar o id do produto. */
 export async function resolverLink(link: string): Promise<{ url: string; produtoId?: string }> {
   let url = link.trim()
+  let ultima: Response | null = null
   for (let i = 0; i < 6; i++) {
     const idp = extrairIdProduto(url)
     if (idp) return { url, produtoId: idp }
-    let r: Response
     try {
-      r = await fetch(url, { redirect: "manual", headers: { "user-agent": NAVEGADOR } })
-    } catch {
+      ultima = await fetch(url, { redirect: "manual", headers: { "user-agent": NAVEGADOR, "accept-language": "pt-BR,pt;q=0.9" } })
+    } catch (e) {
+      log("falha ao abrir", url, String(e))
+      ultima = null
       break
     }
-    const destino = r.headers.get("location")
-    if (r.status < 300 || r.status >= 400 || !destino) break
+    const destino = ultima.headers.get("location")
+    log("link", i, ultima.status, url, "→", destino || "-")
+    if (ultima.status < 300 || ultima.status >= 400 || !destino) break
     url = new URL(destino, url).toString()
   }
-  return { url, produtoId: extrairIdProduto(url) }
+  let produtoId = extrairIdProduto(url)
+  if (!produtoId && ultima?.ok) {
+    try {
+      produtoId = idNoHtml(await ultima.text())
+    } catch {}
+  }
+  log("resolvido", url, "id", produtoId || "-")
+  return { url, produtoId }
 }
 
 async function chamarApify(item: string): Promise<any> {
@@ -67,6 +88,7 @@ async function chamarApify(item: string): Promise<any> {
     body: JSON.stringify({ items: [item], country: "br", maxItems: 1, includeCreatorVideos: true }),
   })
   const txt = await r.text()
+  log("apify", ator, "item", item, "status", r.status, "resposta", txt.slice(0, 600))
   if (!r.ok) throw new Error(`Apify respondeu ${r.status}: ${txt.slice(0, 300)}`)
   let itens: any
   try {
@@ -74,8 +96,14 @@ async function chamarApify(item: string): Promise<any> {
   } catch {
     throw new Error("resposta inválida da Apify")
   }
-  const achado = (Array.isArray(itens) ? itens : [itens]).find((x) => x && (x.product_name || x.title || x.name))
-  if (!achado) throw new Error("a Apify não encontrou o produto (confira se o link é de um produto da TikTok Shop Brasil)")
+  const lista = Array.isArray(itens) ? itens : [itens]
+  const achado = lista.find((x) => x && (x.product_name || x.title || x.name))
+  if (!achado) {
+    const motivo = lista.map((x) => x?.error || x?.status || x?.message).filter(Boolean)[0]
+    throw new Error(
+      `a Apify não encontrou o produto ${item}${motivo ? ` (${String(motivo).slice(0, 160)})` : ""}. Confira se o link é de um produto da TikTok Shop Brasil.`,
+    )
+  }
   return achado
 }
 
@@ -168,6 +196,7 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
     if (!dados || !ehMp4(dados)) continue
     await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
   }
+  log("baixados", { fotos: `${nf} de ${d.imagens.length}`, videos: `${nv} de ${d.videos.length}` })
   p.origem = { fotos: nf, videos: nv, videosEncontrados: d.videos.length, em: new Date().toISOString() }
   p.zip = undefined
   if (!p.fotos.length) throw new Error("não consegui baixar as fotos do produto na loja; anexe as fotos manualmente")
