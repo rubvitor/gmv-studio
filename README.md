@@ -5,8 +5,10 @@ escolhe os produtos do dia, escreve o roteiro, gera o vídeo no ComfyUI da nuvem
 
 ## Como funciona
 
-1. **Produtos**: no app, cole o link da TikTok Shop e anexe fotos e vídeos de referência. As fotos guiam o roteiro, mas
-   nunca aparecem no vídeo. O app monta o pacote `.zip` e envia ao ComfyUI.
+1. **Produtos**: no app, cole o link da TikTok Shop. Com `APIFY_TOKEN`, o app lê a página do produto (mercado Brasil) e
+   baixa sozinho as fotos, o nome, o preço, a descrição e os vídeos de criadores mais vistos daquele produto. Fotos e
+   vídeos extras podem ser anexados à mão. As fotos guiam o roteiro, mas nunca aparecem no vídeo. O app monta o pacote
+   `.zip`, envia ao ComfyUI e, se marcado "Gerar o vídeo assim que terminar", já cria o anúncio.
 2. **Radar diário** (06:00 de São Paulo): pega os produtos de maior prioridade da fila até completar a meta do dia.
    Na fase 2, com a API de afiliado da TikTok Shop, ele também encontra produtos sozinho.
 3. **Pipeline de cada anúncio** (avança a cada 3 minutos):
@@ -32,6 +34,8 @@ No Netlify: *Project configuration → Environment variables* (escopo **Function
 | `ANTHROPIC_API_KEY` | Chave da API da Anthropic (console.anthropic.com). |
 | `METRICOOL_TOKEN` | Opcional. Token da API do Metricool (só nos planos Advanced e Custom). |
 | `METRICOOL_USER_ID` | Opcional. ID de usuário do Metricool (o número depois de `userId=` no endereço). |
+| `APIFY_TOKEN` | Opcional, mas é o que permite colar só o link. Token pessoal da Apify (console.apify.com → Settings → API & Integrations). |
+| `APIFY_ATOR` | Opcional. Troca o ator da Apify (padrão `jungle_synthesizer~tiktok-shop-product-detail-scraper`). |
 | `TIKTOK_SHOP_APP_KEY`, `TIKTOK_SHOP_APP_SECRET`, `TIKTOK_SHOP_ACCESS_TOKEN`, `TIKTOK_SHOP_ENDPOINTS` | Fase 2, depois da aprovação no Partner Center. |
 
 ## API
@@ -42,9 +46,10 @@ Todas as rotas pedem `Authorization: Bearer <APP_TOKEN>`.
 |---|---|
 | `GET /api/status` | Variáveis configuradas, ajustes, gasto de hoje, contagens |
 | `GET/PUT /api/config` | Ler e salvar ajustes |
-| `GET/POST /api/produtos` | Listar e criar produtos (`{link, observacoes, prioridade}`) |
+| `GET/POST /api/produtos` | Listar e criar produtos (`{link, observacoes, prioridade, gerarAoTerminar}`) |
 | `GET/PATCH/DELETE /api/produtos/:id` | Ver, editar, apagar |
-| `POST /api/produtos/:id/fila` | Monta o pacote e coloca na fila |
+| `POST /api/produtos/:id/fila` | Monta o pacote com o que foi enviado e coloca na fila |
+| `POST /api/produtos/:id/coletar` | Busca fotos, informações e vídeos na TikTok Shop, monta o pacote e coloca na fila |
 | `POST /api/uploads` → `PUT /api/uploads/:id/:parte` → `POST /api/uploads/:id/concluir` | Envio de arquivos em partes de 3,5 MB |
 | `GET/POST /api/anuncios` | Listar e criar anúncio para um produto (`{produtoId}`) |
 | `GET/DELETE /api/anuncios/:id` | Detalhe e apagar |

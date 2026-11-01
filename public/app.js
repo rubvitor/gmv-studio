@@ -34,7 +34,7 @@ const ETAPAS = {
   erro: ["Erro", "erro"],
 }
 const PARADOS = ["agendado", "postado", "reprovado", "erro", "pronto"]
-const OPCIONAIS = ["TIKTOK_SHOP", "METRICOOL_TOKEN", "METRICOOL_USER_ID"]
+const OPCIONAIS = ["TIKTOK_SHOP", "METRICOOL_TOKEN", "METRICOOL_USER_ID", "APIFY_TOKEN"]
 const usd = (v) => `US$ ${(v || 0).toFixed(2)}`
 const horaSP = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""
 const textoPost = (p) => `${(p.descricao_pt || "").trim()}\n\n${(p.descricao_en || "").trim()}\n\n${(p.hashtags || []).join(" ")}`
@@ -219,8 +219,10 @@ async function enviarArquivo(produtoId, arquivo, categoria, aoProgredir) {
   await api(`uploads/${ini.upload}/concluir`, { method: "POST" })
 }
 
-function NovoProduto({ concluir, avisar }) {
+function NovoProduto({ concluir, avisar, coleta }) {
   const [link, setLink] = useState("")
+  const [buscar, setBuscar] = useState(coleta)
+  const [gerarJa, setGerarJa] = useState(true)
   const [obs, setObs] = useState("")
   const [prioridade, setPrioridade] = useState(3)
   const [fotos, setFotos] = useState([])
@@ -230,37 +232,51 @@ function NovoProduto({ concluir, avisar }) {
   const salvar = async (e) => {
     e.preventDefault()
     if (!link) return avisar("Cole o link do produto.")
-    if (!fotos.length) return avisar("Escolha pelo menos uma foto do produto.")
+    if (!buscar && !fotos.length) return avisar("Escolha pelo menos uma foto do produto.")
     const grande = videos.find((v) => v.size > 80e6)
     if (grande) return avisar(`O vídeo ${grande.name} passa de 80 MB. Use um trecho menor.`)
     setEnviando(true)
     try {
-      const p = await api("produtos", { method: "POST", body: JSON.stringify({ link, observacoes: obs, prioridade }) })
+      const p = await api("produtos", { method: "POST", body: JSON.stringify({ link, observacoes: obs, prioridade, gerarAoTerminar: gerarJa }) })
       const todos = [...fotos.map((f) => [f, "foto"]), ...videos.map((f) => [f, "video"])]
       for (let i = 0; i < todos.length; i++) {
         const [f, cat] = todos[i]
         await enviarArquivo(p.id, f, cat, (x) => setProgresso(`Enviando ${i + 1} de ${todos.length}: ${Math.round(x * 100)}%`))
       }
-      setProgresso("Arquivos enviados. Montando o pacote…")
-      await new Promise((r) => setTimeout(r, 4000))
-      let tentativas = 0
-      while (tentativas++ < 30) {
-        const atual = await api(`produtos/${p.id}`)
-        if (atual.fotos.length + atual.videos.length >= todos.length) break
-        await new Promise((r) => setTimeout(r, 3000))
+      if (todos.length) {
+        setProgresso("Arquivos enviados. Guardando…")
+        await new Promise((r) => setTimeout(r, 4000))
+        let tentativas = 0
+        while (tentativas++ < 30) {
+          const atual = await api(`produtos/${p.id}`)
+          if (atual.fotos.length + atual.videos.length >= todos.length) break
+          await new Promise((r) => setTimeout(r, 3000))
+        }
       }
-      await api(`produtos/${p.id}/fila`, { method: "POST" })
-      avisar("Produto salvo e entrando na fila.")
+      if (buscar) {
+        await api(`produtos/${p.id}/coletar`, { method: "POST" })
+        avisar(gerarJa ? "Buscando fotos e vídeos na TikTok Shop. O vídeo começa assim que terminar." : "Buscando fotos e vídeos na TikTok Shop.")
+      } else {
+        await api(`produtos/${p.id}/fila`, { method: "POST" })
+        avisar(gerarJa ? "Produto salvo. O vídeo começa assim que o pacote ficar pronto." : "Produto salvo e entrando na fila.")
+      }
       concluir()
     } catch (e2) { avisar(e2.message) } finally { setEnviando(false) }
   }
   return html`<form class="bloco" onSubmit=${salvar}>
     <h2>Novo produto</h2>
     <label class="campo">Link do produto na TikTok Shop<input type="url" required value=${link} onInput=${(e) => setLink(e.target.value)} placeholder="https://vt.tiktok.com/…" /></label>
-    <label class="campo">Fotos do produto<span class="dica">Prints da listagem e fotos com informações. Elas guiam o roteiro, mas não aparecem no vídeo.</span>
-      <input type="file" accept="image/*" multiple onChange=${(e) => setFotos([...e.target.files])} /></label>
-    <label class="campo">Vídeos de referência (opcional)<span class="dica">Até 80 MB cada. Servem só para o ritmo e a demonstração.</span>
-      <input type="file" accept="video/*" multiple onChange=${(e) => setVideos([...e.target.files])} /></label>
+    ${coleta
+      ? html`<label class="alternar"><span>Buscar fotos, informações e vídeos na TikTok Shop<span class="dica"> · os vídeos de quem já vende o produto, os mais vistos primeiro</span></span><input type="checkbox" checked=${buscar} onChange=${(e) => setBuscar(e.target.checked)} /></label>`
+      : html`<p class="sub">Para o app buscar fotos e vídeos sozinho a partir do link, crie a variável APIFY_TOKEN no Netlify. Por enquanto, anexe as fotos.</p>`}
+    <label class="alternar">Gerar o vídeo assim que terminar<input type="checkbox" checked=${gerarJa} onChange=${(e) => setGerarJa(e.target.checked)} /></label>
+    <details class="anexos" open=${!buscar}>
+      <summary>${buscar ? "Anexar fotos ou vídeos extras (opcional)" : "Fotos e vídeos"}</summary>
+      <label class="campo">${buscar ? "Fotos extras" : "Fotos do produto"}<span class="dica">Prints da listagem e fotos com informações. Elas guiam o roteiro, mas não aparecem no vídeo.</span>
+        <input type="file" accept="image/*" multiple onChange=${(e) => setFotos([...e.target.files])} /></label>
+      <label class="campo">Vídeos de referência<span class="dica">Até 80 MB cada. Servem só para o ritmo e a demonstração.</span>
+        <input type="file" accept="video/*" multiple onChange=${(e) => setVideos([...e.target.files])} /></label>
+    </details>
     <label class="campo">Observações<span class="dica">Fatos que não estão nas fotos, como funciona, o que evitar.</span>
       <textarea value=${obs} onInput=${(e) => setObs(e.target.value)}></textarea></label>
     <label class="campo">Prioridade na fila: ${prioridade}<input type="range" min="1" max="5" value=${prioridade} onInput=${(e) => setPrioridade(Number(e.target.value))} /></label>
@@ -270,24 +286,26 @@ function NovoProduto({ concluir, avisar }) {
   </form>`
 }
 
-function Produtos({ avisar, irParaAnuncio }) {
+function Produtos({ avisar, irParaAnuncio, coleta }) {
   const [lista, setLista] = useState(null)
   const [novo, setNovo] = useState(false)
   const carregar = () => api("produtos").then(setLista).catch((e) => avisar(e.message))
-  useEffect(() => { carregar() }, [])
-  if (novo) return html`<${NovoProduto} avisar=${avisar} concluir=${() => { setNovo(false); carregar() }} />`
+  useEffect(() => { carregar(); const t = setInterval(carregar, 10000); return () => clearInterval(t) }, [])
+  if (novo) return html`<${NovoProduto} avisar=${avisar} coleta=${coleta} concluir=${() => { setNovo(false); carregar() }} />`
+  const buscarDeNovo = async (p) => { try { await api(`produtos/${p.id}/coletar`, { method: "POST" }); avisar("Buscando na TikTok Shop."); carregar() } catch (e) { avisar(e.message) } }
   const gerar = async (p) => { try { const a = await api("anuncios", { method: "POST", body: JSON.stringify({ produtoId: p.id }) }); avisar("Anúncio criado."); irParaAnuncio(a.id) } catch (e) { avisar(e.message) } }
-  const rotulo = { rascunho: "Rascunho", preparando: "Montando pacote", na_fila: "Na fila", usado: "Já usado", erro: "Erro" }
+  const rotulo = { rascunho: "Rascunho", coletando: "Buscando na TikTok Shop", preparando: "Montando pacote", na_fila: "Na fila", usado: "Já usado", erro: "Erro" }
   return html`
     <section class="bloco"><div class="cabeca"><h1>Produtos</h1><button class="botao" onClick=${() => setNovo(true)}>Novo produto</button></div>
       <p class="sub">O radar diário pega os de maior prioridade da fila.</p></section>
     ${lista === null ? html`<p class="sub">Carregando…</p>` : lista.length === 0 ? html`<div class="vazio-msg"><p>Nenhum produto ainda.</p><button class="botao" onClick=${() => setNovo(true)}>Cadastrar o primeiro</button></div>` :
       lista.map((p) => html`<section class="bloco">
         <div class="cabeca"><h3>${p.nome || p.link}</h3><span class=${`etapa ${p.status === "na_fila" ? "espera" : p.status === "erro" ? "erro" : p.status === "usado" ? "ok" : ""}`}>${rotulo[p.status]}</span></div>
-        <p class="sub">${p.fotos.length} foto(s), ${p.videos.length} vídeo(s) · prioridade ${p.prioridade}${p.erro ? ` · ${p.erro}` : ""}</p>
+        <p class="sub">${p.fotos.length} foto(s), ${p.videos.length} vídeo(s)${p.origem ? ` (da loja: ${p.origem.fotos} foto(s), ${p.origem.videos} de ${p.origem.videosEncontrados} vídeo(s) de criadores)` : ""} · prioridade ${p.prioridade}${p.erro ? ` · ${p.erro}` : ""}</p>
         <div class="linha">
           ${["na_fila", "usado"].includes(p.status) && html`<button class="botao sec" onClick=${() => gerar(p)}>Gerar anúncio agora</button>`}
           ${["rascunho", "erro"].includes(p.status) && p.fotos.length > 0 && html`<button class="botao sec" onClick=${async () => { await api(`produtos/${p.id}/fila`, { method: "POST" }); carregar() }}>Colocar na fila</button>`}
+          ${coleta && ["rascunho", "erro"].includes(p.status) && html`<button class="botao sec" onClick=${() => buscarDeNovo(p)}>Buscar na TikTok Shop</button>`}
           <a href=${p.link} target="_blank" rel="noopener">Ver na TikTok Shop</a>
           <button class="botao perigo" onClick=${async () => { if (confirm("Apagar este produto?")) { await api(`produtos/${p.id}`, { method: "DELETE" }); carregar() } }}>Apagar</button>
         </div>
@@ -381,7 +399,7 @@ function App() {
   let conteudo
   if (aberto) conteudo = html`<${DetalheAnuncio} id=${aberto} status=${status} avisar=${avisar} voltar=${() => { setAberto(null); recarregar() }} />`
   else if (aba === "hoje") conteudo = html`<${Hoje} status=${status} anuncios=${anuncios} abrir=${abrir} recarregar=${recarregar} avisar=${avisar} />`
-  else if (aba === "produtos") conteudo = html`<${Produtos} avisar=${avisar} irParaAnuncio=${(id) => { setAberto(id); recarregar() }} />`
+  else if (aba === "produtos") conteudo = html`<${Produtos} avisar=${avisar} coleta=${!!status?.coleta} irParaAnuncio=${(id) => { setAberto(id); recarregar() }} />`
   else if (aba === "anuncios") conteudo = html`<${Anuncios} anuncios=${anuncios} abrir=${abrir} />`
   else conteudo = html`<${Ajustes} avisar=${avisar} metricool=${!!status?.metricool} />`
   const abas = [["hoje", "Hoje"], ["produtos", "Produtos"], ["anuncios", "Anúncios"], ["ajustes", "Ajustes"]]

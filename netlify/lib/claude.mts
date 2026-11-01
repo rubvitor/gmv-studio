@@ -57,6 +57,7 @@ export async function planejarAnuncio(o: {
   cfg: Configuracoes
   link: string
   observacoes: string
+  infoLoja?: string
   ficha: string
   estrutura: string
   fotos: { bytes: Uint8Array; tipo: string }[]
@@ -70,6 +71,9 @@ Responda SOMENTE com um objeto JSON válido, sem texto antes ou depois.`
 
   const pedido = `Produto: ${o.link}
 Observações do Rubens: ${o.observacoes || "(nenhuma)"}
+
+Dados da página do produto na TikTok Shop (fonte confiável de fatos; não cite preço no roteiro, ele muda):
+${o.infoLoja || "(não buscados)"}
 
 Ficha lida das fotos pelo ComfyUI:
 ${o.ficha || "(vazia)"}

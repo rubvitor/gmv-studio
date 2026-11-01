@@ -16,11 +16,14 @@ export type Produto = {
   nome: string
   observacoes: string
   prioridade: number
-  status: "rascunho" | "preparando" | "na_fila" | "usado" | "erro"
+  status: "rascunho" | "coletando" | "preparando" | "na_fila" | "usado" | "erro"
   fotos: Arquivo[]
   videos: Arquivo[]
   zip?: Asset
   erro?: string
+  infoLoja?: string // nome, preço, vendas, nota e descrição lidos da página do produto
+  origem?: { fotos: number; videos: number; videosEncontrados: number; em: string } // o que a busca automática trouxe
+  gerarAoTerminar?: boolean // cria o anúncio assim que o pacote ficar pronto
 }
 
 export type EtapaVideo =

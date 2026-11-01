@@ -4,6 +4,7 @@ import { lerConfig, salvarConfig, produtos, anuncios, arquivos, custos, type Pro
 import { autorizado, json, erro, disparar, urlBase, env } from "../lib/http.mts"
 import { aprovarEAgendar, marcarPostado } from "../lib/pipeline.mts"
 import { metricoolConfigurado } from "../lib/metricool.mts"
+import { coletaConfigurada } from "../lib/coleta.mts"
 import { criarAnunciosDoDia, novoAnuncio } from "../lib/radar.mts"
 import * as comfy from "../lib/comfy.mts"
 import { hojeSP, id } from "../lib/util.mts"
@@ -31,8 +32,11 @@ export default async (req: Request, context: Context) => {
           ANTHROPIC_API_KEY: !!env("ANTHROPIC_API_KEY"),
           METRICOOL_TOKEN: !!env("METRICOOL_TOKEN"),
           METRICOOL_USER_ID: !!env("METRICOOL_USER_ID"),
+          APIFY_TOKEN: coletaConfigurada(),
           TIKTOK_SHOP: tiktokConfigurada(),
         },
+        // true: o app busca fotos, informações e vídeos na página do produto a partir do link
+        coleta: coletaConfigurada(),
         // false: sem API do Metricool, os vídeos ficam prontos para postar pelo app do TikTok
         metricool: metricoolConfigurado(),
         config: cfg,
@@ -68,6 +72,7 @@ export default async (req: Request, context: Context) => {
           status: "rascunho",
           fotos: [],
           videos: [],
+          gerarAoTerminar: !!b.gerarAoTerminar,
         }
         await produtos.salvar(p)
         return json(p, 201)
@@ -90,6 +95,15 @@ export default async (req: Request, context: Context) => {
         p.status = "preparando"
         await produtos.salvar(p)
         await disparar(base, "/interno/preparar", { produtoId: p.id })
+        return json(p, 202)
+      }
+      if (acao === "coletar" && m === "POST") {
+        if (!coletaConfigurada()) return erro("configure APIFY_TOKEN no Netlify para buscar na TikTok Shop")
+        if (p.status === "coletando") return json(p, 202)
+        p.status = "coletando"
+        p.erro = undefined
+        await produtos.salvar(p)
+        await disparar(base, "/interno/coletar", { produtoId: p.id })
         return json(p, 202)
       }
       if (acao === "arquivo" && extra && m === "DELETE") {

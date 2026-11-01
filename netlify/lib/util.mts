@@ -124,3 +124,50 @@ export function criarZip(arquivos: { nome: string; dados: Uint8Array }[]): Uint8
   }
   return out
 }
+
+/** Tipo real de uma imagem pelos primeiros bytes (só os formatos que o ComfyUI e o Claude aceitam). */
+export function tipoImagem(b: Uint8Array): "image/jpeg" | "image/png" | "image/webp" | null {
+  if (b.length < 12) return null
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg"
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png"
+  const txt = (i: number, n: number) => String.fromCharCode(...b.subarray(i, i + n))
+  if (txt(0, 4) === "RIFF" && txt(8, 4) === "WEBP") return "image/webp"
+  return null
+}
+
+/** Vídeo MP4/MOV: caixa "ftyp" logo no início. */
+export function ehMp4(b: Uint8Array): boolean {
+  return b.length > 12 && String.fromCharCode(...b.subarray(4, 8)) === "ftyp"
+}
+
+/** Largura e altura de JPEG, PNG ou WebP sem decodificar a imagem. */
+export function dimensoesImagem(b: Uint8Array): { largura?: number; altura?: number } {
+  const tipo = tipoImagem(b)
+  if (tipo === "image/png" && b.length >= 24) {
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength)
+    return { largura: v.getUint32(16), altura: v.getUint32(20) }
+  }
+  if (tipo === "image/jpeg") {
+    let i = 2
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) { i++; continue }
+      const m = b[i + 1]
+      if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue }
+      const tam = (b[i + 2] << 8) | b[i + 3]
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        return { altura: (b[i + 5] << 8) | b[i + 6], largura: (b[i + 7] << 8) | b[i + 8] }
+      }
+      i += 2 + tam
+    }
+    return {}
+  }
+  if (tipo === "image/webp" && b.length >= 30) {
+    const bloco = String.fromCharCode(...b.subarray(12, 16))
+    if (bloco === "VP8 ") return { largura: ((b[27] << 8) | b[26]) & 0x3fff, altura: ((b[29] << 8) | b[28]) & 0x3fff }
+    if (bloco === "VP8L") {
+      return { largura: 1 + (((b[22] & 0x3f) << 8) | b[21]), altura: 1 + (((b[24] & 0x0f) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6)) }
+    }
+    if (bloco === "VP8X") return { largura: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), altura: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) }
+  }
+  return {}
+}

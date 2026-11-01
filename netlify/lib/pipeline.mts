@@ -59,12 +59,12 @@ async function enviar(a: Anuncio, tipo: NonNullable<Anuncio["tipoJob"]>, grafo: 
 
 async function planejar(a: Anuncio, p: Produto, cfg: Configuracoes, correcoes = "") {
   const fotos = await fotosDoProduto(p)
-  let plano = await planejarAnuncio({ cfg, link: p.link, observacoes: p.observacoes, ficha: a.ficha || "", estrutura: a.estrutura || "", fotos, correcoes })
+  let plano = await planejarAnuncio({ cfg, link: p.link, observacoes: p.observacoes, infoLoja: p.infoLoja, ficha: a.ficha || "", estrutura: a.estrutura || "", fotos, correcoes })
   let problemas = conferirRoteiro(plano.roteiro)
   if (problemas.length) {
     registrar(a, `roteiro refeito: ${problemas.join("; ")}`)
     plano = await planejarAnuncio({
-      cfg, link: p.link, observacoes: p.observacoes, ficha: a.ficha || "", estrutura: a.estrutura || "", fotos,
+      cfg, link: p.link, observacoes: p.observacoes, infoLoja: p.infoLoja, ficha: a.ficha || "", estrutura: a.estrutura || "", fotos,
       correcoes: [correcoes, "Corrija o roteiro: " + problemas.join("; ")].filter(Boolean).join("\n"),
     })
     problemas = conferirRoteiro(plano.roteiro)
