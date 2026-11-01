@@ -35,7 +35,6 @@ No Netlify: *Project configuration → Environment variables* (escopo **Function
 | `METRICOOL_TOKEN` | Opcional. Token da API do Metricool (só nos planos Advanced e Custom). |
 | `METRICOOL_USER_ID` | Opcional. ID de usuário do Metricool (o número depois de `userId=` no endereço). |
 | `APIFY_TOKEN` | Opcional, mas é o que permite colar só o link. Token pessoal da Apify (console.apify.com → Settings → API & Integrations). |
-| `APIFY_ATOR` | Opcional. Troca o ator da Apify (padrão `jungle_synthesizer~tiktok-shop-product-detail-scraper`). |
 | `TIKTOK_SHOP_APP_KEY`, `TIKTOK_SHOP_APP_SECRET`, `TIKTOK_SHOP_ACCESS_TOKEN`, `TIKTOK_SHOP_ENDPOINTS` | Fase 2, depois da aprovação no Partner Center. |
 
 ## API

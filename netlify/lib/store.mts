@@ -24,6 +24,7 @@ export type Produto = {
   infoLoja?: string // nome, preço, vendas, nota e descrição lidos da página do produto
   origem?: { fotos: number; videos: number; videosEncontrados: number; em: string } // o que a busca automática trouxe
   gerarAoTerminar?: boolean // cria o anúncio assim que o pacote ficar pronto
+  diagnostico?: string[] // o que cada serviço respondeu na última busca
 }
 
 export type EtapaVideo =

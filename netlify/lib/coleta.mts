@@ -1,6 +1,7 @@
 // Busca automática a partir do link da TikTok Shop: fotos, informações e vídeos de criadores que já vendem o produto.
-// Sem a API oficial de afiliado, a página do produto é lida por um ator da Apify (mercado "br").
-// Variáveis: APIFY_TOKEN (obrigatória para a busca) e APIFY_ATOR (opcional, troca o ator).
+// Sem a API oficial de afiliado, a página do produto é lida por atores da Apify (mercado Brasil), tentados em ordem.
+// Vídeos que vêm só com o endereço da página são baixados por um ator de vídeos do TikTok.
+// Variável: APIFY_TOKEN.
 
 import { arquivos, type Arquivo, type Produto } from "./store.mts"
 import { enviarAsset } from "./comfy.mts"
@@ -20,7 +21,7 @@ export type DadosLoja = {
   descricao: string
   fatos: string[]
   imagens: string[]
-  videos: { url: string; views: number; duracao?: number }[]
+  videos: { url: string; pagina?: string; views: number; duracao?: number }[]
 }
 
 /** Id numérico do produto num link da TikTok Shop (página do produto, não de vídeo). */
@@ -80,91 +81,190 @@ export async function resolverLink(link: string): Promise<{ url: string; produto
   return { url, produtoId }
 }
 
-async function chamarApify(item: string): Promise<any> {
-  const ator = env("APIFY_ATOR") || ATOR_PADRAO
-  const r = await fetch(`https://api.apify.com/v2/acts/${ator}/run-sync-get-dataset-items?timeout=280`, {
+// Serviços tentados em ordem até um trazer os dados do produto. Cada um tem o seu formato de entrada.
+type Estrategia = { nome: string; ator: string; entrada: (alvo: string) => Record<string, unknown> }
+export const ESTRATEGIAS: Estrategia[] = [
+  {
+    nome: "scrapesage",
+    ator: "scrapesage~tiktok-shop-scraper",
+    entrada: (alvo) => ({ mode: "product", productUrls: [alvo], region: "BR", maxItems: 1, includeAffiliateVideos: true, includeReviews: false }),
+  },
+  {
+    nome: "jungle",
+    ator: ATOR_PADRAO,
+    entrada: (alvo) => ({ items: [alvo], country: "br", maxItems: 1, includeCreatorVideos: true }),
+  },
+]
+const ATOR_VIDEOS = "clockworks~tiktok-scraper"
+
+export async function rodarAtor(ator: string, entrada: unknown, timeoutSeg = 240): Promise<{ status: number; itens: any[]; texto: string }> {
+  const r = await fetch(`https://api.apify.com/v2/acts/${ator}/run-sync-get-dataset-items?timeout=${timeoutSeg}`, {
     method: "POST",
     headers: { authorization: `Bearer ${env("APIFY_TOKEN")}`, "content-type": "application/json" },
-    body: JSON.stringify({ items: [item], country: "br", maxItems: 1, includeCreatorVideos: true }),
+    body: JSON.stringify(entrada),
   })
-  const txt = await r.text()
-  log("apify", ator, "item", item, "status", r.status, "resposta", txt.slice(0, 600))
-  if (!r.ok) throw new Error(`Apify respondeu ${r.status}: ${txt.slice(0, 300)}`)
-  let itens: any
+  const texto = await r.text()
+  log("apify", ator, "status", r.status, "resposta", texto.slice(0, 600))
+  let itens: any[] = []
   try {
-    itens = JSON.parse(txt)
-  } catch {
-    throw new Error("resposta inválida da Apify")
-  }
-  const lista = (Array.isArray(itens) ? itens : [itens]).map(desembrulhar)
-  const achado = lista.find((x) => x && (nomeDe(x) || (x.images || x.image_urls || []).length))
-  if (!achado) {
-    const motivo = lista.map((x) => x?.error || x?.status || x?.message || x?.reason).filter(Boolean)[0]
-    const amostra = lista.length ? JSON.stringify(lista[0]).slice(0, 220) : "lista vazia"
-    throw new Error(
-      `a Apify não trouxe os dados do produto ${item}${motivo ? ` (${String(motivo).slice(0, 160)})` : ""}. Resposta: ${amostra}`,
-    )
-  }
-  return achado
+    const j = JSON.parse(texto)
+    itens = Array.isArray(j) ? j : [j]
+  } catch {}
+  return { status: r.status, itens, texto }
 }
 
 // alguns atores devolvem o produto dentro de outro objeto
 function desembrulhar(x: any): any {
   if (!x || typeof x !== "object") return x
-  const dentro = x.product_info || x.product || x.productInfo || x.data
-  return dentro && typeof dentro === "object" && !Array.isArray(dentro) ? { ...x, ...dentro } : x
+  const dentro = x.product_info || x.productInfo || x.product_detail || x.productDetail || x.product || x.data
+  return dentro && typeof dentro === "object" && !Array.isArray(dentro) ? { ...dentro, ...x } : x
 }
 
 const nomeDe = (x: any): string =>
   String(x?.product_name || x?.productName || x?.product_title || x?.productTitle || x?.title || x?.name || "").trim()
 
-const urlDe = (v: any): string => (typeof v === "string" ? v : v?.url || v?.url_list?.[0] || v?.src || "")
+const temDados = (x: any) => !!x && typeof x === "object" && !x.error && (!!nomeDe(x) || coletarImagens(x).length > 0)
 
-export function normalizar(x: any): DadosLoja {
-  const imagens = [...new Set<string>((x.images || x.image_urls || x.imageUrls || []).map(urlDe).filter(Boolean))]
-  const brutos = [
-    ...(x.creator_videos || []),
-    ...((x.videos || []) as any[]).map((v) => (typeof v === "string" ? { content_url: v } : v)),
-  ]
+const ehUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\//.test(v)
+const urlDe = (v: any): string => (ehUrl(v) ? v : v?.url || v?.url_list?.[0] || v?.urlList?.[0] || v?.src || v?.thumb_url || "")
+
+/** Percorre o objeto e chama `f` em cada valor, com o caminho de chaves até ele. */
+function percorrer(x: any, f: (v: any, caminho: string[]) => void, caminho: string[] = [], prof = 0) {
+  if (prof > 7 || x == null) return
+  f(x, caminho)
+  if (Array.isArray(x)) x.forEach((v, i) => percorrer(v, f, [...caminho, String(i)], prof + 1))
+  else if (typeof x === "object") for (const [k, v] of Object.entries(x)) percorrer(v, f, [...caminho, k], prof + 1)
+}
+
+/** Fotos do produto: listas com chave de imagem, fora de vídeos, avaliações, loja e avatares. */
+function coletarImagens(x: any): string[] {
+  const achadas: string[] = []
+  for (const k of ["images", "image_urls", "imageUrls", "main_images", "mainImages", "product_images", "productImages", "gallery", "imgs"]) {
+    for (const v of Array.isArray(x?.[k]) ? x[k] : []) {
+      const u = urlDe(v)
+      if (ehUrl(u)) achadas.push(u)
+    }
+  }
+  if (!achadas.length) {
+    percorrer(x, (v, caminho) => {
+      const c = caminho.join(".").toLowerCase()
+      if (!/image|img|gallery|photo/.test(c) || /video|review|avatar|shop|seller|logo|icon|cover|comment|author|creator/.test(c)) return
+      const u = urlDe(v)
+      if (ehUrl(u) && !/\.(mp4|m3u8)/i.test(u)) achadas.push(u)
+    })
+  }
+  return [...new Set(achadas)]
+}
+
+type VideoAchado = { url?: string; pagina?: string; views: number; duracao?: number }
+
+/** Vídeos de criadores que promovem o produto: link direto do arquivo quando houver, senão a página do vídeo. */
+function coletarVideos(x: any): VideoAchado[] {
+  const listas: any[] = []
+  percorrer(x, (v, caminho) => {
+    const ultima = (caminho.at(-1) || "").toLowerCase()
+    if (Array.isArray(v) && /video/.test(ultima)) listas.push(...v)
+  })
+  const out: VideoAchado[] = []
+  for (const el of listas) {
+    if (ehUrl(el)) {
+      out.push(/tiktok\.com\/@[^/]+\/video\//.test(el) ? { pagina: el, views: 0 } : { url: el, views: 0 })
+      continue
+    }
+    if (!el || typeof el !== "object") continue
+    const direto = [el.content_url, el.contentUrl, el.play_url, el.playUrl, el.download_url, el.downloadUrl, el.playAddr, el.downloadAddr,
+      el.video?.playAddr, el.video?.downloadAddr, el.video?.play_addr?.url_list?.[0], el.mediaUrls?.[0]].find(ehUrl)
+    let pagina = [el.video_url, el.videoUrl, el.webVideoUrl, el.share_url, el.shareUrl, el.url].find(
+      (u) => ehUrl(u) && /tiktok\.com\/@[^/]+\/video\//.test(u),
+    )
+    const idv = String(el.video_id || el.videoId || el.aweme_id || el.id || "")
+    const autor = el.author_name || el.authorName || el.author?.uniqueId || el.author_unique_id || el.creator_handle || el.handle
+    if (!pagina && /^\d{15,21}$/.test(idv) && autor) pagina = `https://www.tiktok.com/@${String(autor).replace(/^@/, "")}/video/${idv}`
+    const views = Number(el.play_count ?? el.playCount ?? el.plays ?? el.views ?? el.view_count ?? el.stats?.playCount ?? 0) || 0
+    const duracao = Number(el.duration_secs ?? el.durationSecs ?? el.duration ?? el.video?.duration ?? el.videoMeta?.duration ?? 0) || undefined
+    if (direto || pagina) out.push({ url: direto, pagina, views, duracao })
+  }
   const vistos = new Set<string>()
-  const videos = brutos
-    .map((v: any) => ({
-      url: String(v?.content_url || v?.play_url || v?.download_url || v?.playAddr || ""),
-      views: Number(v?.play_count ?? v?.views ?? 0) || 0,
-      duracao: Number(v?.duration_secs ?? v?.duration ?? 0) || undefined,
-    }))
-    .filter((v) => v.url.startsWith("http") && !vistos.has(v.url) && vistos.add(v.url))
-    .filter((v) => !v.duracao || (v.duracao >= 5 && v.duracao <= 120))
+  return out
+    .filter((v) => {
+      const chave = v.pagina || v.url!
+      if (vistos.has(chave)) return false
+      vistos.add(chave)
+      return !v.duracao || (v.duracao >= 5 && v.duracao <= 120)
+    })
     .sort((a, b) => b.views - a.views)
-  const moeda = x.currency ? ` ${x.currency}` : ""
-  const loja = x.shop_name || x.shop?.name || x.seller?.name
-  const variantes = (x.variants || x.skus || []).map((v: any) => v?.name || v?.title || v?.sku_name).filter(Boolean).slice(0, 8)
+}
+
+export function normalizar(bruto: any): DadosLoja {
+  const x = desembrulhar(bruto)
+  const moeda = x.currency || x.price?.currency ? ` ${x.currency || x.price?.currency}` : ""
+  const preco = typeof x.price === "object" ? x.price?.sale_price ?? x.price?.value ?? x.price?.amount : x.price ?? x.sale_price ?? x.salePrice
+  const original = typeof x.price === "object" ? x.price?.original_price : x.original_price ?? x.originalPrice
+  const vendidos = x.sold_count ?? x.soldCount ?? x.units_sold ?? x.unitsSold ?? x.sold
+  const avaliacoes = x.review_count ?? x.reviewCount ?? x.reviews_count
+  const loja = x.shop_name || x.shopName || x.shop?.name || x.shop?.shop_name || x.seller?.name
+  const variantes = (x.variants || x.skus || []).map((v: any) => v?.name || v?.title || v?.sku_name || v?.skuName).filter(Boolean).slice(0, 8)
   const fatos = [
-    x.price != null && `Preço na loja: ${x.price}${moeda}`,
-    x.original_price != null && x.original_price !== x.price && `Preço original: ${x.original_price}${moeda}`,
-    (x.sold_count ?? x.soldCount) != null && `Vendidos: ${x.sold_count ?? x.soldCount}`,
-    x.rating != null && `Nota: ${x.rating}${x.review_count != null ? ` (${x.review_count} avaliações)` : ""}`,
+    preco != null && `Preço na loja: ${preco}${moeda}`,
+    original != null && original !== preco && `Preço original: ${original}${moeda}`,
+    vendidos != null && `Vendidos: ${vendidos}`,
+    x.rating != null && `Nota: ${x.rating}${avaliacoes != null ? ` (${avaliacoes} avaliações)` : ""}`,
     loja && `Loja: ${loja}`,
     variantes.length && `Variações: ${variantes.join(", ")}`,
   ].filter(Boolean) as string[]
+  const descricao = x.description || x.desc || x.product_description || x.productDescription || x.details || ""
   return {
     nome: nomeDe(x),
-    descricao: String(x.description || x.desc || "").trim().slice(0, 4000),
+    descricao: (typeof descricao === "string" ? descricao : JSON.stringify(descricao)).trim().slice(0, 4000),
     fatos,
-    imagens,
-    videos,
+    imagens: coletarImagens(x),
+    videos: coletarVideos(x).map((v) => ({ url: v.url || "", pagina: v.pagina, views: v.views, duracao: v.duracao })),
   }
 }
 
 async function baixar(url: string, max: number): Promise<Uint8Array | null> {
   try {
-    const r = await fetch(url, { headers: { "user-agent": NAVEGADOR, referer: "https://www.tiktok.com/" } })
+    const apify = new URL(url).hostname === "api.apify.com"
+    const headers: Record<string, string> = apify
+      ? { authorization: `Bearer ${env("APIFY_TOKEN")}` }
+      : { "user-agent": NAVEGADOR, referer: "https://www.tiktok.com/" }
+    const r = await fetch(url, { headers })
     if (!r.ok) return null
     if (Number(r.headers.get("content-length") || 0) > max) return null
     const dados = new Uint8Array(await r.arrayBuffer())
     return dados.length > 1000 && dados.length <= max ? dados : null
   } catch {
     return null
+  }
+}
+
+/** Baixa vídeos do TikTok pela página (quando o serviço da loja não dá o arquivo direto). */
+async function baixarPelaPagina(paginas: string[], diag: string[]): Promise<Uint8Array[]> {
+  if (!paginas.length) return []
+  try {
+    const r = await rodarAtor(ATOR_VIDEOS, {
+      postURLs: paginas, shouldDownloadVideos: true, shouldDownloadCovers: false,
+      shouldDownloadSlideshowImages: false, shouldDownloadSubtitles: false, resultsPerPage: paginas.length,
+    }, 280)
+    const links: string[] = []
+    for (const it of r.itens) {
+      let achado = ""
+      percorrer(it, (v) => {
+        if (!achado && ehUrl(v) && /key-value-stores\/[^/]+\/records\//.test(v)) achado = v
+      })
+      const alt = it?.videoMeta?.downloadAddr
+      if (achado || ehUrl(alt)) links.push(achado || alt)
+    }
+    const out: Uint8Array[] = []
+    for (const u of links) {
+      const dados = await baixar(u, MAX_VIDEO)
+      if (dados && ehMp4(dados)) out.push(dados)
+    }
+    diag.push(`vídeos pela página: HTTP ${r.status}, ${r.itens.length} registro(s), ${out.length} baixado(s)`)
+    return out
+  } catch (e) {
+    diag.push(`vídeos pela página: ${String((e as any)?.message || e).slice(0, 160)}`)
+    return []
   }
 }
 
@@ -178,12 +278,37 @@ async function anexar(p: Produto, dados: Uint8Array, nome: string, tipo: string,
 /**
  * Lê a página do produto e anexa ao produto até `maxFotos` fotos e os `maxVideos` vídeos de criadores mais vistos.
  * Mantém o que você enviou à mão; refazer a busca troca só o que veio da loja.
+ * Cada tentativa fica registrada em p.diagnostico (aparece no app).
  */
 export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: number } = {}) {
   const maxFotos = o.maxFotos ?? 8
   const maxVideos = o.maxVideos ?? 3
+  const diag: string[] = []
+  p.diagnostico = diag
   const { url, produtoId } = await resolverLink(p.link)
-  const d = normalizar(await chamarApify(produtoId || url))
+  diag.push(`link: ${produtoId ? `produto ${produtoId}` : `sem número de produto (${url.slice(0, 120)})`}`)
+  const alvo = produtoId ? `https://shop.tiktok.com/br/pdp/${produtoId}` : url
+
+  let bruto: any = null
+  for (const e of ESTRATEGIAS) {
+    try {
+      const r = await rodarAtor(e.ator, e.entrada(alvo))
+      const lista = r.itens.map(desembrulhar)
+      const achado = lista.find(temDados)
+      const erroAtor = r.status >= 300 ? ` ${r.texto.slice(0, 160)}` : ""
+      const amostra = !achado && lista.length ? ` sem dados: ${JSON.stringify(lista[0]).slice(0, 160)}` : ""
+      diag.push(`${e.nome}: HTTP ${r.status}, ${lista.length} registro(s)${erroAtor}${amostra}`)
+      if (achado) {
+        bruto = achado
+        break
+      }
+    } catch (err: any) {
+      diag.push(`${e.nome}: ${String(err?.message || err).slice(0, 160)}`)
+    }
+  }
+  if (!bruto) throw new Error(`nenhum serviço trouxe os dados do produto ${produtoId || ""}`.trim())
+  const d = normalizar(bruto)
+  diag.push(`dados: "${d.nome.slice(0, 60)}", ${d.imagens.length} foto(s), ${d.videos.length} vídeo(s) de criadores`)
 
   p.fotos = p.fotos.filter((f) => !f.nome.startsWith("loja_"))
   p.videos = p.videos.filter((f) => !f.nome.startsWith("loja_"))
@@ -200,14 +325,25 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
     if (!dados || !tipo) continue
     await anexar(p, dados, `loja_foto_${String(++nf).padStart(2, "0")}.${tipo === "image/jpeg" ? "jpg" : tipo.split("/")[1]}`, tipo, "foto")
   }
+
   let nv = 0
+  const pendentes: string[] = []
   for (const v of d.videos) {
     if (nv >= maxVideos) break
-    const dados = await baixar(v.url, MAX_VIDEO)
-    if (!dados || !ehMp4(dados)) continue
-    await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
+    const dados = v.url ? await baixar(v.url, MAX_VIDEO) : null
+    if (dados && ehMp4(dados)) {
+      await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
+    } else if (v.pagina && pendentes.length < maxVideos) {
+      pendentes.push(v.pagina)
+    }
   }
-  log("baixados", { fotos: `${nf} de ${d.imagens.length}`, videos: `${nv} de ${d.videos.length}` })
+  if (nv < maxVideos && pendentes.length) {
+    for (const dados of await baixarPelaPagina(pendentes.slice(0, maxVideos - nv), diag)) {
+      await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
+    }
+  }
+  diag.push(`baixados: ${nf} foto(s), ${nv} vídeo(s)`)
+  log(diag.join(" | "))
   p.origem = { fotos: nf, videos: nv, videosEncontrados: d.videos.length, em: new Date().toISOString() }
   p.zip = undefined
   if (!p.fotos.length) throw new Error("não consegui baixar as fotos do produto na loja; anexe as fotos manualmente")

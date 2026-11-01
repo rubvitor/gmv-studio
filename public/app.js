@@ -302,6 +302,7 @@ function Produtos({ avisar, irParaAnuncio, coleta }) {
       lista.map((p) => html`<section class="bloco">
         <div class="cabeca"><h3>${p.nome || p.link}</h3><span class=${`etapa ${p.status === "na_fila" ? "espera" : p.status === "erro" ? "erro" : p.status === "usado" ? "ok" : ""}`}>${rotulo[p.status]}</span></div>
         <p class="sub">${p.fotos.length} foto(s), ${p.videos.length} vídeo(s)${p.origem ? ` (da loja: ${p.origem.fotos} foto(s), ${p.origem.videos} de ${p.origem.videosEncontrados} vídeo(s) de criadores)` : ""} · prioridade ${p.prioridade}${p.erro ? ` · ${p.erro}` : ""}</p>
+        ${p.diagnostico?.length > 0 && html`<details class="anexos" open=${p.status === "erro"}><summary>Detalhes da busca</summary><ul class="log">${p.diagnostico.map((l) => html`<li>${l}</li>`)}</ul></details>`}
         <div class="linha">
           ${["na_fila", "usado"].includes(p.status) && html`<button class="botao sec" onClick=${() => gerar(p)}>Gerar anúncio agora</button>`}
           ${["rascunho", "erro"].includes(p.status) && p.fotos.length > 0 && html`<button class="botao sec" onClick=${async () => { await api(`produtos/${p.id}/fila`, { method: "POST" }); carregar() }}>Colocar na fila</button>`}

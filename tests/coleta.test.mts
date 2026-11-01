@@ -50,6 +50,7 @@ test("link curto → fotos, vídeos mais vistos, pacote e anúncio", async () =>
       assert.equal(init.redirect, "manual")
       return new Response(null, { status: 301, headers: { location: "https://www.tiktok.com/view/product/1729587769570005671?region=BR&u_code=x" } })
     }
+    if (u.startsWith("https://api.apify.com/v2/acts/scrapesage~tiktok-shop-scraper/")) return Response.json([])
     if (u.startsWith("https://api.apify.com/v2/acts/jungle_synthesizer~tiktok-shop-product-detail-scraper/run-sync-get-dataset-items")) {
       apifyCorpo = JSON.parse(init.body)
       apifyAuth = init.headers.authorization
@@ -94,7 +95,9 @@ test("link curto → fotos, vídeos mais vistos, pacote e anúncio", async () =>
   await produtos.salvar(p)
   const origem = await coletar(p)
 
-  assert.deepEqual(apifyCorpo, { items: ["1729587769570005671"], country: "br", maxItems: 1, includeCreatorVideos: true })
+  assert.deepEqual(apifyCorpo, { items: ["https://shop.tiktok.com/br/pdp/1729587769570005671"], country: "br", maxItems: 1, includeCreatorVideos: true })
+  assert.match(p.diagnostico!.join("\n"), /scrapesage: HTTP 200, 0 registro/)
+  assert.match(p.diagnostico!.join("\n"), /jungle: HTTP 200, 1 registro/)
   assert.equal(apifyAuth, "Bearer tok")
   assert.equal(p.nome, "Fone Bettdow Bluetooth 5.3")
   assert.match(p.infoLoja!, /Preço na loja: 59.9 BRL/)
@@ -133,4 +136,71 @@ test("id do produto dentro do HTML", async () => {
   assert.equal(idNoHtml('<script>{"product_id":"1729587769570005671"}</script>'), "1729587769570005671")
   assert.equal(idNoHtml('<link rel="canonical" href="https://www.tiktok.com/view/product/1729587769570005671">'), "1729587769570005671")
   assert.equal(idNoHtml("<html>nada</html>"), undefined)
+})
+
+test("outro formato: produto aninhado e vídeos só com a página, baixados por outro ator", async () => {
+  let entradaVideos: any = null
+  let nAsset = 100
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    const u = String(url)
+    if (u.startsWith("https://api.apify.com/v2/acts/scrapesage~tiktok-shop-scraper/")) {
+      const e = JSON.parse(init.body)
+      assert.deepEqual(e.productUrls, ["https://shop.tiktok.com/br/pdp/1738027982368572776"])
+      assert.equal(e.region, "BR")
+      return Response.json([{
+        productId: "1738027982368572776",
+        product_detail: {
+          productTitle: "Cabo USB-C 240W", sale_price: "29.99", currency: "BRL", unitsSold: 900,
+          media: { gallery_images: [{ url_list: ["https://img.example/1.jpeg"] }], video: { cover: "https://img.example/capa.jpeg" } },
+        },
+        affiliateVideos: [
+          { videoId: "7302812105782970420", authorName: "loja.top", playCount: 900, duration: 25 },
+          { video_url: "https://www.tiktok.com/@outro/video/7302812105782970421", play_count: 50000, duration: 18 },
+        ],
+        shop: { logo: "https://img.example/logo.png" },
+      }])
+    }
+    if (u.startsWith("https://api.apify.com/v2/acts/clockworks~tiktok-scraper/")) {
+      entradaVideos = JSON.parse(init.body)
+      return Response.json(entradaVideos.postURLs.map((pg: string, i: number) => ({
+        webVideoUrl: pg, mediaUrls: [`https://api.apify.com/v2/key-value-stores/kv1/records/video-${i}.mp4`],
+      })))
+    }
+    if (u.startsWith("https://api.apify.com/v2/key-value-stores/kv1/records/")) {
+      assert.equal(init.headers.authorization, "Bearer tok")
+      return new Response(MP4)
+    }
+    if (u === "https://img.example/1.jpeg") return new Response(JPEG)
+    if (u === "https://dep.run.comfy.app/api/v2/assets" && init.method === "POST") return Response.json({ id: `as${++nAsset}`, file_path: "x" })
+    throw new Error("fetch inesperado: " + u)
+  }) as any
+  const { coletar } = await import("../netlify/lib/coleta.mts")
+  const p: any = { id: "p10", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3, status: "coletando", fotos: [], videos: [] }
+  await coletar(p)
+  assert.equal(p.nome, "Cabo USB-C 240W")
+  assert.match(p.infoLoja, /Preço na loja: 29.99 BRL/)
+  assert.match(p.infoLoja, /Vendidos: 900/)
+  assert.deepEqual(p.fotos.map((f: any) => f.nome), ["loja_foto_01.jpg"])
+  // o mais visto primeiro; o outro tem o endereço montado com o autor e o id
+  assert.deepEqual(entradaVideos.postURLs, [
+    "https://www.tiktok.com/@outro/video/7302812105782970421",
+    "https://www.tiktok.com/@loja.top/video/7302812105782970420",
+  ])
+  assert.equal(entradaVideos.shouldDownloadVideos, true)
+  assert.equal(p.videos.length, 2)
+  assert.match(p.diagnostico.join("\n"), /vídeos pela página: HTTP 200, 2 registro\(s\), 2 baixado/)
+})
+
+test("nenhum serviço trouxe dados: erro com o diagnóstico de cada um", async () => {
+  globalThis.fetch = (async (url: any) => {
+    const u = String(url)
+    if (u.includes("scrapesage")) return Response.json({ error: { type: "actor-is-not-rented", message: "rent it" } }, { status: 403 })
+    if (u.includes("jungle_synthesizer")) return Response.json([])
+    throw new Error("fetch inesperado: " + u)
+  }) as any
+  const { coletar } = await import("../netlify/lib/coleta.mts")
+  const p: any = { id: "p11", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3, status: "coletando", fotos: [], videos: [] }
+  await assert.rejects(coletar(p), /nenhum serviço trouxe os dados do produto 1738027982368572776/)
+  assert.match(p.diagnostico[1], /scrapesage: HTTP 403, 1 registro\(s\) .*actor-is-not-rented/)
+  assert.match(p.diagnostico[2], /jungle: HTTP 200, 0 registro/)
 })
