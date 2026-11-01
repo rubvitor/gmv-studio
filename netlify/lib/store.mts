@@ -32,6 +32,7 @@ export type EtapaVideo =
   | "conferindo"
   | "pronto"
   | "agendado"
+  | "postado" // postado por você no app do TikTok (com o produto anexado)
   | "reprovado"
   | "erro"
 
@@ -53,7 +54,8 @@ export type Anuncio = {
   quadros?: string[]
   veredictos: (Veredito & { etapa: string; em: string })[]
   custoUSD: number
-  publicacao?: { horario: string; metricoolId?: number; plannerUrl?: string }
+  // via "metricool": agendado pela API; via "tiktok": horário sugerido para você postar no app
+  publicacao?: { horario: string; via?: "metricool" | "tiktok"; metricoolId?: number; plannerUrl?: string; postadoEm?: string }
   erro?: string
   log: { em: string; msg: string }[]
 }

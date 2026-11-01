@@ -15,7 +15,9 @@ escolhe os produtos do dia, escreve o roteiro, gera o vídeo no ComfyUI da nuvem
    - prévia das 3 cenas (barata) → conferência visual pelo Claude → nova tentativa se algo estiver sem nexo;
    - vídeo completo (9 fotos de rosto, voz clonada, retoque de cabelo castanho bem escuro, até 1:30);
    - quadros do vídeo final → conferência (legenda, produto, coerência);
-   - agendamento no Metricool no próximo horário livre (ou espera aprovação, conforme os ajustes).
+   - publicação: sem a API do Metricool, o vídeo vai para **Prontos para postar** com o melhor horário, o botão de salvar o
+     vídeo e o de copiar a descrição; você posta pelo app do TikTok (único jeito de anexar o produto) e toca em "Já postei".
+     Com a API do Metricool (plano Advanced), agenda sozinho no próximo horário livre, mas sem o produto anexado.
 4. **Orçamento**: nenhum job é enviado se passar do orçamento diário de GPU definido nos ajustes.
 
 ## Configuração (uma vez)
@@ -28,8 +30,8 @@ No Netlify: *Project configuration → Environment variables* (escopo **Function
 | `COMFY_API_KEY` | Chave da API da Comfy (platform.comfy.org). |
 | `COMFY_DEPLOYMENT_URL` | `https://dep-03eb3a34-6196-462e-a243-539fd258148f.run.comfy.app` |
 | `ANTHROPIC_API_KEY` | Chave da API da Anthropic (console.anthropic.com). |
-| `METRICOOL_TOKEN` | Token da API do Metricool (plano Advanced). |
-| `METRICOOL_USER_ID` | ID de usuário do Metricool. |
+| `METRICOOL_TOKEN` | Opcional. Token da API do Metricool (só nos planos Advanced e Custom). |
+| `METRICOOL_USER_ID` | Opcional. ID de usuário do Metricool (o número depois de `userId=` no endereço). |
 | `TIKTOK_SHOP_APP_KEY`, `TIKTOK_SHOP_APP_SECRET`, `TIKTOK_SHOP_ACCESS_TOKEN`, `TIKTOK_SHOP_ENDPOINTS` | Fase 2, depois da aprovação no Partner Center. |
 
 ## API
@@ -46,7 +48,8 @@ Todas as rotas pedem `Authorization: Bearer <APP_TOKEN>`.
 | `POST /api/uploads` → `PUT /api/uploads/:id/:parte` → `POST /api/uploads/:id/concluir` | Envio de arquivos em partes de 3,5 MB |
 | `GET/POST /api/anuncios` | Listar e criar anúncio para um produto (`{produtoId}`) |
 | `GET/DELETE /api/anuncios/:id` | Detalhe e apagar |
-| `POST /api/anuncios/:id/aprovar` | Agendar no Metricool (modo aprovação) |
+| `POST /api/anuncios/:id/aprovar` | Agendar no Metricool (modo aprovação, exige a API) |
+| `POST /api/anuncios/:id/postado` | Marcar como postado pelo app do TikTok |
 | `POST /api/anuncios/:id/refazer` | Recomeçar com nova semente |
 | `GET /api/anuncios/:id/midia/:assetId?t=<APP_TOKEN>` | Redireciona para a imagem ou vídeo |
 | `GET /api/custos` | Gasto de GPU por dia |

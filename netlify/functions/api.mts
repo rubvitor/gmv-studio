@@ -2,7 +2,8 @@
 import type { Config, Context } from "@netlify/functions"
 import { lerConfig, salvarConfig, produtos, anuncios, arquivos, custos, type Produto, type Anuncio } from "../lib/store.mts"
 import { autorizado, json, erro, disparar, urlBase, env } from "../lib/http.mts"
-import { aprovarEAgendar } from "../lib/pipeline.mts"
+import { aprovarEAgendar, marcarPostado } from "../lib/pipeline.mts"
+import { metricoolConfigurado } from "../lib/metricool.mts"
 import { criarAnunciosDoDia, novoAnuncio } from "../lib/radar.mts"
 import * as comfy from "../lib/comfy.mts"
 import { hojeSP, id } from "../lib/util.mts"
@@ -32,6 +33,8 @@ export default async (req: Request, context: Context) => {
           METRICOOL_USER_ID: !!env("METRICOOL_USER_ID"),
           TIKTOK_SHOP: tiktokConfigurada(),
         },
+        // false: sem API do Metricool, os vídeos ficam prontos para postar pelo app do TikTok
+        metricool: metricoolConfigurado(),
         config: cfg,
         hoje: hojeSP(),
         custoHojeUSD: await custos.doDia(hojeSP()),
@@ -153,6 +156,7 @@ export default async (req: Request, context: Context) => {
         return json({ ok: true })
       }
       if (acao === "aprovar" && m === "POST") return json(await aprovarEAgendar(a.id))
+      if (acao === "postado" && m === "POST") return json(await marcarPostado(a.id))
       if (acao === "refazer" && m === "POST") {
         if (a.jobAtual) await comfy.cancelarJob(a.jobAtual).catch(() => {})
         Object.assign(a, { etapa: a.ficha ? "planejando" : "aguardando", jobAtual: undefined, tipoJob: undefined, erro: undefined, tentativas: 0, semente: Math.floor(Math.random() * 1e9), previa: undefined, video: undefined, quadros: undefined, publicacao: undefined })

@@ -1,12 +1,21 @@
 // Publicação no TikTok via API do Metricool (exige plano Advanced).
 // POST https://app.metricool.com/api/v2/scheduler/posts?blogId=&userId= com cabeçalho X-Mc-Auth.
+// Sem as variáveis, o app deixa cada vídeo pronto para postar pelo app do TikTok.
 
 import type { Configuracoes } from "./config.mts"
 
+function lerEnv(nome: string): string | undefined {
+  return (globalThis as any).Netlify?.env?.get(nome) ?? process.env[nome]
+}
+
 function env(nome: string): string {
-  const v = (globalThis as any).Netlify?.env?.get(nome) ?? process.env[nome]
+  const v = lerEnv(nome)
   if (!v) throw new Error(`variável ${nome} não configurada no Netlify`)
   return v
+}
+
+export function metricoolConfigurado(): boolean {
+  return !!(lerEnv("METRICOOL_TOKEN") && lerEnv("METRICOOL_USER_ID"))
 }
 
 export async function agendarTikTok(o: {

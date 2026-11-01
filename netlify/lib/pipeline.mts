@@ -5,7 +5,7 @@ import { lerConfig, produtos, anuncios, custos, type Anuncio, type Produto } fro
 import * as comfy from "./comfy.mts"
 import { grafoAnalise, grafoAnuncio, grafoQuadros, conferirRoteiro, type RefProduto } from "./workflow.mts"
 import { planejarAnuncio, conferirImagens, type Plano } from "./claude.mts"
-import { agendarTikTok, montarTexto } from "./metricool.mts"
+import { agendarTikTok, montarTexto, metricoolConfigurado } from "./metricool.mts"
 import { custoGpu, hojeSP, proximoHorario } from "./util.mts"
 import type { Configuracoes } from "./config.mts"
 
@@ -77,30 +77,54 @@ async function planejar(a: Anuncio, p: Produto, cfg: Configuracoes, correcoes = 
   }
 }
 
+async function horarioLivre(a: Anuncio, cfg: Configuracoes): Promise<string> {
+  const todos = await anuncios.listar()
+  const ocupados = todos.filter((x) => x.id !== a.id && x.etapa !== "postado").map((x) => x.publicacao?.horario).filter(Boolean) as string[]
+  return proximoHorario(cfg.horarios, ocupados)
+}
+
 async function agendar(a: Anuncio, cfg: Configuracoes) {
   if (!a.video || !a.plano) throw new Error("anúncio sem vídeo ou plano")
-  const todos = await anuncios.listar()
-  const ocupados = todos.map((x) => x.publicacao?.horario).filter(Boolean) as string[]
-  const horario = proximoHorario(cfg.horarios, ocupados)
+  const horario = await horarioLivre(a, cfg)
   const url = await comfy.urlAssinada(a.video.id)
   const r = await agendarTikTok({ cfg, horarioISO: horario, videoUrl: url, texto: montarTexto(a.plano), titulo: a.plano.titulo_tiktok || a.plano.nome_produto, autoPublicar: true })
-  a.publicacao = { horario, metricoolId: r.id, plannerUrl: r.plannerUrl }
+  a.publicacao = { horario, via: "metricool", metricoolId: r.id, plannerUrl: r.plannerUrl }
   a.etapa = "agendado"
   registrar(a, `agendado no Metricool para ${horario}`)
+}
+
+// Sem a API do Metricool: reserva o próximo horário livre como sugestão e espera você postar no app do TikTok.
+async function sugerirHorario(a: Anuncio, cfg: Configuracoes) {
+  const horario = await horarioLivre(a, cfg)
+  a.publicacao = { horario, via: "tiktok" }
+  registrar(a, `pronto para postar no app do TikTok (sugestão: ${horario.slice(11, 16)} de ${horario.slice(8, 10)}/${horario.slice(5, 7)})`)
 }
 
 export async function aprovarEAgendar(idAnuncio: string) {
   const a = await anuncios.ler(idAnuncio)
   if (!a) throw new Error("anúncio não encontrado")
   if (a.etapa !== "pronto") throw new Error(`anúncio está em "${a.etapa}", não em "pronto"`)
+  if (!metricoolConfigurado()) throw new Error("a API do Metricool não está configurada (exige o plano Advanced); poste pelo app do TikTok")
   await agendar(a, await lerConfig())
+  await anuncios.salvar(a)
+  return a
+}
+
+export async function marcarPostado(idAnuncio: string) {
+  const a = await anuncios.ler(idAnuncio)
+  if (!a) throw new Error("anúncio não encontrado")
+  if (a.etapa !== "pronto") throw new Error(`anúncio está em "${a.etapa}", não em "pronto"`)
+  const agora = new Date().toISOString()
+  a.publicacao = { ...(a.publicacao || { horario: agora }), via: "tiktok", postadoEm: agora }
+  a.etapa = "postado"
+  registrar(a, "postado no app do TikTok")
   await anuncios.salvar(a)
   return a
 }
 
 export async function avancar(idAnuncio: string): Promise<Anuncio | null> {
   const a = await anuncios.ler(idAnuncio)
-  if (!a || ["agendado", "reprovado", "erro"].includes(a.etapa)) return a
+  if (!a || ["agendado", "postado", "reprovado", "erro"].includes(a.etapa)) return a
   const cfg = await lerConfig()
   const p = await produtos.ler(a.produtoId)
   if (!p) {
@@ -176,7 +200,8 @@ export async function avancar(idAnuncio: string): Promise<Anuncio | null> {
         } else {
           a.etapa = "pronto"
           registrar(a, "vídeo aprovado na conferência")
-          if (cfg.modoPublicacao === "automatico") await agendar(a, cfg)
+          if (!metricoolConfigurado()) await sugerirHorario(a, cfg)
+          else if (cfg.modoPublicacao === "automatico") await agendar(a, cfg)
         }
       }
       await anuncios.salvar(a)
@@ -216,5 +241,5 @@ function textosDe(pl: Plano) {
 }
 
 export async function ativos(): Promise<Anuncio[]> {
-  return (await anuncios.listar()).filter((a) => !["agendado", "reprovado", "erro", "pronto"].includes(a.etapa))
+  return (await anuncios.listar()).filter((a) => !["agendado", "postado", "reprovado", "erro", "pronto"].includes(a.etapa))
 }

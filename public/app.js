@@ -27,17 +27,29 @@ const ETAPAS = {
   previa: ["Gerando prévia das cenas", ""],
   gerando: ["Gerando o vídeo", ""],
   conferindo: ["Conferindo o vídeo", ""],
-  pronto: ["Pronto para aprovar", "espera"],
+  pronto: ["Pronto para postar", "espera"],
   agendado: ["Agendado", "ok"],
+  postado: ["Postado no TikTok", "ok"],
   reprovado: ["Reprovado na conferência", "erro"],
   erro: ["Erro", "erro"],
 }
+const PARADOS = ["agendado", "postado", "reprovado", "erro", "pronto"]
+const OPCIONAIS = ["TIKTOK_SHOP", "METRICOOL_TOKEN", "METRICOOL_USER_ID"]
 const usd = (v) => `US$ ${(v || 0).toFixed(2)}`
 const horaSP = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""
+const textoPost = (p) => `${(p.descricao_pt || "").trim()}\n\n${(p.descricao_en || "").trim()}\n\n${(p.hashtags || []).join(" ")}`
+
+function legenda(a) {
+  if (a.etapa === "pronto" && a.publicacao?.via === "tiktok") return `Postar em ${horaSP(a.publicacao.horario)}`
+  if (a.etapa === "postado") return `Postado em ${horaSP(a.publicacao?.postadoEm)}`
+  if (a.publicacao) return `Publica em ${horaSP(a.publicacao.horario)}`
+  if (a.erro) return a.erro.slice(0, 90)
+  return a.ultimoLog?.msg || ""
+}
 
 // ---------- componentes ----------
 function Tira({ a }) {
-  const rodando = !["agendado", "reprovado", "erro", "pronto"].includes(a.etapa)
+  const rodando = !PARADOS.includes(a.etapa)
   return html`<div class="tira" aria-label="Cenas A, B e C">
     ${["A", "B", "C"].map((l, i) => {
       const id = a.previa?.[i]
@@ -59,7 +71,7 @@ function CartaoAnuncio({ a, abrir }) {
     <div class="cabeca"><span class="nome">${a.nome || "Produto em análise"}</span><${Etapa} etapa=${a.etapa} /></div>
     <${Tira} a=${a} />
     <div class="cabeca sub">
-      <span>${a.publicacao ? `Publica ${horaSP(a.publicacao.horario)}` : a.erro ? a.erro.slice(0, 90) : a.ultimoLog?.msg || ""}</span>
+      <span>${legenda(a)}</span>
       <span>${usd(a.custoUSD)}</span>
     </div>
   </button>`
@@ -68,7 +80,9 @@ function CartaoAnuncio({ a, abrir }) {
 // ---------- telas ----------
 function Hoje({ status, anuncios, abrir, recarregar, avisar }) {
   const hoje = anuncios.filter((a) => a.dia === status?.hoje)
-  const faltando = status ? Object.entries(status.variaveis).filter(([k, v]) => !v && k !== "TIKTOK_SHOP").map(([k]) => k) : []
+  const prontos = anuncios.filter((a) => a.etapa === "pronto")
+  const restoHoje = hoje.filter((a) => a.etapa !== "pronto")
+  const faltando = status ? Object.entries(status.variaveis).filter(([k, v]) => !v && !OPCIONAIS.includes(k)).map(([k]) => k) : []
   const cfg = status?.config
   const pct = cfg ? Math.min(100, ((status.custoHojeUSD || 0) / (cfg.orcamentoDiarioUSD || 1)) * 100) : 0
   const gerar = async () => {
@@ -90,9 +104,10 @@ function Hoje({ status, anuncios, abrir, recarregar, avisar }) {
       </div>
       <p class="sub">${status?.produtos?.naFila ?? 0} produto(s) na fila. O radar roda sozinho todo dia às 06:00.</p>
     </section>
+    ${prontos.length > 0 && html`<h2>Prontos para postar</h2>${prontos.map((a) => html`<${CartaoAnuncio} a=${a} abrir=${abrir} />`)}`}
     ${hoje.length === 0
       ? html`<div class="vazio-msg"><p>Nenhum anúncio hoje ainda.</p><p class="sub">Cadastre produtos na aba Produtos e coloque na fila.</p></div>`
-      : hoje.map((a) => html`<${CartaoAnuncio} a=${a} abrir=${abrir} />`)}
+      : restoHoje.length > 0 && html`<h2>Hoje</h2>${restoHoje.map((a) => html`<${CartaoAnuncio} a=${a} abrir=${abrir} />`)}`}
   `
 }
 
@@ -101,7 +116,55 @@ function Anuncios({ anuncios, abrir }) {
   return anuncios.map((a) => html`<${CartaoAnuncio} a=${a} abrir=${abrir} />`)
 }
 
-function DetalheAnuncio({ id, voltar, avisar }) {
+// Postagem pelo app do TikTok: é o único jeito de anexar o produto (carrinho) ao vídeo.
+function PostarNoTikTok({ a, rotuloIA, avisar, aoPostar }) {
+  const [produto, setProduto] = useState(null)
+  const [arquivo, setArquivo] = useState(null)
+  const [baixando, setBaixando] = useState(false)
+  useEffect(() => { api(`produtos/${a.produtoId}`).then(setProduto).catch(() => {}) }, [a.produtoId])
+  const url = midia(a.id, a.video.id)
+  const nome = `${(a.plano?.nome_produto || "anuncio").normalize("NFD").replace(/[^\w-]+/g, "_").slice(0, 40)}.mp4`
+  const podeCompartilhar = typeof navigator.canShare === "function"
+  // 1º toque baixa o vídeo; 2º toque abre a folha de compartilhar (o iPhone exige o toque na hora de compartilhar)
+  const preparar = async () => {
+    setBaixando(true)
+    try {
+      const r = await fetch(url)
+      if (!r.ok) throw new Error()
+      const f = new File([await r.blob()], nome, { type: "video/mp4" })
+      if (!navigator.canShare({ files: [f] })) throw new Error()
+      setArquivo(f)
+    } catch { avisar("Não deu para preparar aqui. Toque em Abrir vídeo e salve pelo botão de compartilhar.") } finally { setBaixando(false) }
+  }
+  const compartilhar = async () => {
+    try { await navigator.share({ files: [arquivo] }) } catch (e) { if (e?.name !== "AbortError") avisar("Não deu para compartilhar. Toque em Abrir vídeo.") }
+  }
+  const copiar = async () => {
+    try { await navigator.clipboard.writeText(textoPost(a.plano)); avisar("Descrição copiada.") } catch { avisar("Não deu para copiar. Segure o texto da descrição mais abaixo.") }
+  }
+  const sugerido = a.publicacao?.via === "tiktok" ? a.publicacao.horario : null
+  return html`<section class="bloco destaque">
+    <h2>Postar no TikTok</h2>
+    <p class="sub">${sugerido ? `Melhor horário: ${horaSP(sugerido)}. ` : ""}Postando pelo app do TikTok, o produto vai junto e o carrinho aparece no vídeo.</p>
+    <ol class="passos">
+      <li><span>Salve o vídeo no celular.</span>
+        <div class="linha">
+          ${podeCompartilhar && (arquivo
+            ? html`<button class="botao" onClick=${compartilhar}>Salvar ou compartilhar</button>`
+            : html`<button class="botao" onClick=${preparar} disabled=${baixando}>${baixando ? "Preparando…" : "Preparar vídeo"}</button>`)}
+          <a class=${`botao ${podeCompartilhar ? "sec" : ""}`} href=${url} target="_blank" rel="noopener">Abrir vídeo</a>
+        </div></li>
+      <li><span>Copie a descrição.</span>
+        <div class="linha"><button class="botao sec" onClick=${copiar}>Copiar descrição</button></div></li>
+      <li><span>No TikTok, toque em <b>+</b>, escolha o vídeo e cole a descrição. Em <b>Adicionar link</b>, escolha <b>Produto</b> e selecione ${produto?.nome ? html`<b>${produto.nome}</b>` : "este produto"}.${rotuloIA ? html` Em <b>Mais opções</b>, ligue <b>Conteúdo gerado por IA</b>.` : ""} Publique.</span>
+        ${produto?.link && html`<div class="linha"><a href=${produto.link} target="_blank" rel="noopener">Ver o produto na TikTok Shop</a></div>`}</li>
+      <li><span>Depois de publicar, marque aqui.</span>
+        <div class="linha"><button class="botao" onClick=${aoPostar}>Já postei</button></div></li>
+    </ol>
+  </section>`
+}
+
+function DetalheAnuncio({ id, status, voltar, avisar }) {
   const [a, setA] = useState(null)
   const carregar = useCallback(() => api(`anuncios/${id}`).then(setA).catch((e) => avisar(e.message)), [id])
   useEffect(() => { carregar(); const t = setInterval(carregar, 20000); return () => clearInterval(t) }, [carregar])
@@ -109,6 +172,8 @@ function DetalheAnuncio({ id, voltar, avisar }) {
   const acao = async (nome, msg) => { try { await api(`anuncios/${id}/${nome}`, { method: "POST" }); avisar(msg); carregar() } catch (e) { avisar(e.message) } }
   const apagar = async () => { if (!confirm("Apagar este anúncio?")) return; await api(`anuncios/${id}`, { method: "DELETE" }); voltar() }
   const p = a.plano
+  const metricool = !!status?.metricool
+  const pub = a.publicacao
   return html`
     <button class="botao sec" onClick=${voltar}>Voltar</button>
     <section class="bloco">
@@ -116,17 +181,19 @@ function DetalheAnuncio({ id, voltar, avisar }) {
       <${Tira} a=${a} />
       ${a.video && html`<video controls playsinline preload="metadata" src=${midia(a.id, a.video.id)}></video>`}
       ${a.erro && html`<p class="sub">${a.erro}</p>`}
-      ${a.publicacao && html`<p>Agendado para ${horaSP(a.publicacao.horario)}${a.publicacao.plannerUrl ? html` · <a href=${a.publicacao.plannerUrl} target="_blank" rel="noopener">abrir no Metricool</a>` : ""}</p>`}
+      ${a.etapa === "agendado" && pub && html`<p>Agendado para ${horaSP(pub.horario)}${pub.plannerUrl ? html` · <a href=${pub.plannerUrl} target="_blank" rel="noopener">abrir no Metricool</a>` : ""}</p>`}
+      ${a.etapa === "postado" && html`<p>Postado no TikTok em ${horaSP(pub?.postadoEm)}.</p>`}
       <div class="linha">
-        ${a.etapa === "pronto" && html`<button class="botao" onClick=${() => acao("aprovar", "Aprovado e agendado no Metricool.")}>Aprovar e agendar</button>`}
+        ${a.etapa === "pronto" && metricool && html`<button class="botao" onClick=${() => acao("aprovar", "Aprovado e agendado no Metricool.")}>Aprovar e agendar</button>`}
         ${["reprovado", "erro", "pronto"].includes(a.etapa) && html`<button class="botao sec" onClick=${() => acao("refazer", "Refazendo o anúncio.")}>Refazer</button>`}
         <button class="botao perigo" onClick=${apagar}>Apagar</button>
       </div>
       <p class="sub">Custo de GPU: ${usd(a.custoUSD)}</p>
     </section>
+    ${a.etapa === "pronto" && a.video && p && !metricool && html`<${PostarNoTikTok} a=${a} rotuloIA=${status?.config?.rotuloIA !== false} avisar=${avisar} aoPostar=${() => acao("postado", "Marcado como postado.")} />`}
     ${p && html`<section class="bloco">
       <h2>Roteiro</h2><pre class="roteiro">${p.roteiro}</pre>
-      <h2>Descrição do post</h2><pre class="roteiro">${`${p.descricao_pt}\n\n${p.descricao_en}\n\n${(p.hashtags || []).join(" ")}`}</pre>
+      <h2>Descrição do post</h2><pre class="roteiro">${textoPost(p)}</pre>
     </section>`}
     ${a.veredictos?.length > 0 && html`<section class="bloco">
       <h2>Conferências</h2>
@@ -228,7 +295,7 @@ function Produtos({ avisar, irParaAnuncio }) {
   `
 }
 
-function Ajustes({ avisar }) {
+function Ajustes({ avisar, metricool }) {
   const [c, setC] = useState(null)
   const [novoHorario, setNovoHorario] = useState("")
   const [custos, setCustos] = useState([])
@@ -249,18 +316,20 @@ function Ajustes({ avisar }) {
     </section>
     <section class="bloco">
       <h2>Publicação</h2>
-      <div class="segmento" role="group" aria-label="Modo de publicação">
-        <button aria-pressed=${c.modoPublicacao === "automatico"} onClick=${() => mudar("modoPublicacao", "automatico")}>Automático</button>
-        <button aria-pressed=${c.modoPublicacao === "aprovacao"} onClick=${() => mudar("modoPublicacao", "aprovacao")}>Eu aprovo antes</button>
-      </div>
-      <div class="campo">Horários de publicação (São Paulo)
+      ${metricool
+        ? html`<div class="segmento" role="group" aria-label="Modo de publicação">
+            <button aria-pressed=${c.modoPublicacao === "automatico"} onClick=${() => mudar("modoPublicacao", "automatico")}>Automático</button>
+            <button aria-pressed=${c.modoPublicacao === "aprovacao"} onClick=${() => mudar("modoPublicacao", "aprovacao")}>Eu aprovo antes</button>
+          </div>`
+        : html`<p class="sub">Cada vídeo aprovado fica em <b>Prontos para postar</b>, com o melhor horário, o vídeo e a descrição. Você posta pelo app do TikTok, que é onde o produto vai junto. Para publicar sozinho pelo Metricool (sem o produto anexado), é preciso o plano Advanced e as variáveis METRICOOL_TOKEN e METRICOOL_USER_ID.</p>`}
+      <div class="campo">${metricool ? "Horários de publicação (São Paulo)" : "Horários sugeridos (São Paulo)"}
         <div class="chips">${c.horarios.map((hh) => html`<span class="chip">${hh}<button aria-label=${`Remover ${hh}`} onClick=${() => mudar("horarios", c.horarios.filter((x) => x !== hh))}>×</button></span>`)}</div>
         <div class="linha"><input type="time" value=${novoHorario} onInput=${(e) => setNovoHorario(e.target.value)} style="max-width:160px" />
           <button class="botao sec" onClick=${() => { if (novoHorario) { mudar("horarios", [...new Set([...c.horarios, novoHorario])].sort()); setNovoHorario("") } }}>Adicionar horário</button></div>
       </div>
       <label class="alternar">Marcar como conteúdo gerado por IA<input type="checkbox" checked=${c.rotuloIA} onChange=${(e) => mudar("rotuloIA", e.target.checked)} /></label>
       <label class="alternar">Marcar como conteúdo de marca (afiliado)<input type="checkbox" checked=${c.conteudoDeMarca} onChange=${(e) => mudar("conteudoDeMarca", e.target.checked)} /></label>
-      <label class="campo">ID da marca no Metricool<input type="text" value=${c.metricoolBlogId} onInput=${(e) => mudar("metricoolBlogId", e.target.value)} /></label>
+      ${metricool && html`<label class="campo">ID da marca no Metricool<input type="text" value=${c.metricoolBlogId} onInput=${(e) => mudar("metricoolBlogId", e.target.value)} /></label>`}
     </section>
     <section class="bloco">
       <h2>Roteiro e descrição</h2>
@@ -307,14 +376,14 @@ function App() {
   }, [])
   useEffect(() => { if (logado) { recarregar(); const t = setInterval(recarregar, 30000); return () => clearInterval(t) } }, [logado])
   if (!logado) return html`<${Entrar} pronto=${() => setLogado(true)} />`
-  const produzindo = anuncios.some((a) => !["agendado", "reprovado", "erro", "pronto"].includes(a.etapa))
+  const produzindo = anuncios.some((a) => !PARADOS.includes(a.etapa))
   const abrir = (id) => setAberto(id)
   let conteudo
-  if (aberto) conteudo = html`<${DetalheAnuncio} id=${aberto} avisar=${avisar} voltar=${() => { setAberto(null); recarregar() }} />`
+  if (aberto) conteudo = html`<${DetalheAnuncio} id=${aberto} status=${status} avisar=${avisar} voltar=${() => { setAberto(null); recarregar() }} />`
   else if (aba === "hoje") conteudo = html`<${Hoje} status=${status} anuncios=${anuncios} abrir=${abrir} recarregar=${recarregar} avisar=${avisar} />`
   else if (aba === "produtos") conteudo = html`<${Produtos} avisar=${avisar} irParaAnuncio=${(id) => { setAberto(id); recarregar() }} />`
   else if (aba === "anuncios") conteudo = html`<${Anuncios} anuncios=${anuncios} abrir=${abrir} />`
-  else conteudo = html`<${Ajustes} avisar=${avisar} />`
+  else conteudo = html`<${Ajustes} avisar=${avisar} metricool=${!!status?.metricool} />`
   const abas = [["hoje", "Hoje"], ["produtos", "Produtos"], ["anuncios", "Anúncios"], ["ajustes", "Ajustes"]]
   return html`
     <header class="topo"><span class="marca"><span class=${`tally ${produzindo ? "on" : ""}`} title=${produzindo ? "Produzindo" : "Parado"}></span>GMV Studio</span>
