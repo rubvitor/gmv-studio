@@ -96,16 +96,27 @@ async function chamarApify(item: string): Promise<any> {
   } catch {
     throw new Error("resposta inválida da Apify")
   }
-  const lista = Array.isArray(itens) ? itens : [itens]
-  const achado = lista.find((x) => x && (x.product_name || x.title || x.name))
+  const lista = (Array.isArray(itens) ? itens : [itens]).map(desembrulhar)
+  const achado = lista.find((x) => x && (nomeDe(x) || (x.images || x.image_urls || []).length))
   if (!achado) {
-    const motivo = lista.map((x) => x?.error || x?.status || x?.message).filter(Boolean)[0]
+    const motivo = lista.map((x) => x?.error || x?.status || x?.message || x?.reason).filter(Boolean)[0]
+    const amostra = lista.length ? JSON.stringify(lista[0]).slice(0, 220) : "lista vazia"
     throw new Error(
-      `a Apify não encontrou o produto ${item}${motivo ? ` (${String(motivo).slice(0, 160)})` : ""}. Confira se o link é de um produto da TikTok Shop Brasil.`,
+      `a Apify não trouxe os dados do produto ${item}${motivo ? ` (${String(motivo).slice(0, 160)})` : ""}. Resposta: ${amostra}`,
     )
   }
   return achado
 }
+
+// alguns atores devolvem o produto dentro de outro objeto
+function desembrulhar(x: any): any {
+  if (!x || typeof x !== "object") return x
+  const dentro = x.product_info || x.product || x.productInfo || x.data
+  return dentro && typeof dentro === "object" && !Array.isArray(dentro) ? { ...x, ...dentro } : x
+}
+
+const nomeDe = (x: any): string =>
+  String(x?.product_name || x?.productName || x?.product_title || x?.productTitle || x?.title || x?.name || "").trim()
 
 const urlDe = (v: any): string => (typeof v === "string" ? v : v?.url || v?.url_list?.[0] || v?.src || "")
 
@@ -137,7 +148,7 @@ export function normalizar(x: any): DadosLoja {
     variantes.length && `Variações: ${variantes.join(", ")}`,
   ].filter(Boolean) as string[]
   return {
-    nome: String(x.product_name || x.title || x.name || "").trim(),
+    nome: nomeDe(x),
     descricao: String(x.description || x.desc || "").trim().slice(0, 4000),
     fatos,
     imagens,
