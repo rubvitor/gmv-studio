@@ -143,11 +143,93 @@ const ehUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\
 const urlDe = (v: any): string => (ehUrl(v) ? v : v?.url || v?.url_list?.[0] || v?.urlList?.[0] || v?.src || v?.thumb_url || "")
 
 /** Percorre o objeto e chama `f` em cada valor, com o caminho de chaves até ele. */
-function percorrer(x: any, f: (v: any, caminho: string[]) => void, caminho: string[] = [], prof = 0) {
-  if (prof > 7 || x == null) return
+function percorrer(x: any, f: (v: any, caminho: string[]) => void, caminho: string[] = [], prof = 0, max = 7) {
+  if (prof > max || x == null) return
   f(x, caminho)
-  if (Array.isArray(x)) x.forEach((v, i) => percorrer(v, f, [...caminho, String(i)], prof + 1))
-  else if (typeof x === "object") for (const [k, v] of Object.entries(x)) percorrer(v, f, [...caminho, k], prof + 1)
+  if (Array.isArray(x)) x.forEach((v, i) => percorrer(v, f, [...caminho, String(i)], prof + 1, max))
+  else if (typeof x === "object") for (const [k, v] of Object.entries(x)) percorrer(v, f, [...caminho, k], prof + 1, max)
+}
+
+// ---------- navegador de verdade, saindo do Brasil ----------
+const ATOR_NAVEGADOR = "apify~puppeteer-scraper"
+
+// Roda dentro da página do produto: devolve título, metatags, imagens, JSONs embutidos e o texto visível.
+const FUNCAO_PAGINA = `async function pageFunction(context) {
+  const { page } = context;
+  await new Promise((r) => setTimeout(r, 5000));
+  return await page.evaluate(() => {
+    const meta = (n) => (document.querySelector('meta[property="' + n + '"]') || document.querySelector('meta[name="' + n + '"]') || {}).content || null;
+    const scripts = [...document.querySelectorAll('script')]
+      .map((s) => s.textContent || '')
+      .filter((t) => t.length > 200 && /^\\s*[\\[{]/.test(t))
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 4)
+      .map((t) => t.slice(0, 1500000));
+    const imgs = [...document.querySelectorAll('img')].map((i) => i.currentSrc || i.src).filter((u) => /^https?:/.test(u));
+    return { url: location.href, title: document.title, ogTitle: meta('og:title'), ogImage: meta('og:image'),
+      ogDescription: meta('og:description'), description: meta('description'), imgs, scripts,
+      text: (document.body && document.body.innerText || '').slice(0, 5000) };
+  });
+}`
+
+export function entradaNavegador(url: string) {
+  return {
+    startUrls: [{ url }],
+    pageFunction: FUNCAO_PAGINA,
+    proxyConfiguration: PROXY_BR,
+    maxRequestsPerCrawl: 1,
+    maxRequestRetries: 2,
+    maxConcurrency: 1,
+    pageLoadTimeoutSecs: 90,
+    pageFunctionTimeoutSecs: 90,
+  }
+}
+
+const TITULO_GENERICO = /^(tiktok|security check|verify|access denied)|make your day|captcha/i
+
+/** Transforma o que o navegador viu num registro de produto; procura o produto certo (pelo id) dentro dos JSONs da página. */
+export function deNavegador(it: any, produtoId?: string): any | null {
+  if (!it || typeof it !== "object" || (!it.title && !it.scripts && !it.imgs)) return null
+  let exato: any = null
+  for (const t of it.scripts || []) {
+    if (exato || !produtoId || !t.includes(produtoId)) continue
+    let o: any
+    try {
+      o = JSON.parse(t)
+    } catch {
+      continue
+    }
+    percorrer(o, (v) => {
+      if (exato || !v || typeof v !== "object" || Array.isArray(v)) return
+      if (String(v.product_id ?? v.productId ?? v.id ?? "") === produtoId) exato = v
+    }, [], 0, 16)
+  }
+  // dentro do produto certo: o primeiro nome e a primeira descrição que aparecerem (podem estar aninhados)
+  let nomeJson = exato ? nomeDe(exato) : ""
+  let descJson = ""
+  if (exato) {
+    percorrer(exato, (v, caminho) => {
+      if (!v || typeof v !== "object" || Array.isArray(v)) return
+      if (/review|recommend|shop|seller|sku/i.test(caminho.join("."))) return
+      if (!nomeJson && nomeDe(v)) nomeJson = nomeDe(v)
+      const d = v.description || v.desc || v.desc_detail || v.descDetail
+      if (!descJson && typeof d === "string") descJson = d
+    }, [], 0, 8)
+  }
+  const titulo = String(it.ogTitle || it.title || "").replace(/\s*[-|]\s*TikTok.*$/i, "").trim()
+  const imgsPagina = (it.imgs || []).filter(
+    (u: string) => /tiktokcdn|ibyteimg|byteimg|ttwstatic|tos-/.test(u) && !/avatar|emoji|icon|logo|sprite/i.test(u),
+  )
+  const nome = nomeJson || (TITULO_GENERICO.test(titulo) ? "" : titulo)
+  const texto = String(it.text || "")
+  return {
+    ...(exato || {}),
+    product_name: nome,
+    description: descJson || it.ogDescription || it.description || "",
+    images: [...new Set([...(exato ? coletarImagens(exato) : []), ...(ehUrl(it.ogImage) ? [it.ogImage] : []), ...imgsPagina])].slice(0, 12),
+    _textoPagina: texto.slice(0, 3000),
+    _bloqueado: TITULO_GENERICO.test(titulo) && /verif|captcha|robot|security/i.test(texto + titulo),
+  }
 }
 
 /** Fotos do produto: listas com chave de imagem, fora de vídeos, avaliações, loja e avatares. */
@@ -226,7 +308,9 @@ export function normalizar(bruto: any): DadosLoja {
     loja && `Loja: ${loja}`,
     variantes.length && `Variações: ${variantes.join(", ")}`,
   ].filter(Boolean) as string[]
-  const descricao = x.description || x.desc || x.product_description || x.productDescription || x.details || ""
+  const descricao =
+    x.description || x.desc || x.product_description || x.productDescription || x.details ||
+    (x._textoPagina ? `Texto da página do produto:\n${x._textoPagina}` : "")
   return {
     nome: nomeDe(x),
     descricao: (typeof descricao === "string" ? descricao : JSON.stringify(descricao)).trim().slice(0, 4000),
@@ -343,6 +427,24 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
       diag.push(`${e.nome}: ${String(err?.message || err).slice(0, 160)}`)
     }
   }
+  if (!bruto) {
+    // Navegador de verdade abrindo a página do produto a partir do Brasil
+    const pagina = produtoId ? `https://www.tiktok.com/view/product/${produtoId}?region=BR&locale=pt-BR` : url
+    try {
+      const r = await rodarAtor(ATOR_NAVEGADOR, entradaNavegador(pagina), 280)
+      const visto = r.itens.map((it) => deNavegador(it, produtoId)).find(Boolean)
+      const ok = visto && !visto._bloqueado && temDados(visto)
+      diag.push(
+        `navegador no Brasil: HTTP ${r.status}, ${r.itens.length} página(s)` +
+          (visto ? `, título "${String(visto.product_name || "").slice(0, 60)}", ${visto.images.length} imagem(ns)${visto._bloqueado ? ", o TikTok pediu verificação" : ""}` : "") +
+          (r.status >= 300 ? ` ${r.texto.slice(0, 160)}` : ""),
+      )
+      if (ok) bruto = visto
+    } catch (err: any) {
+      diag.push(`navegador no Brasil: ${String(err?.message || err).slice(0, 160)}`)
+    }
+  }
+
   p.fotos = p.fotos.filter((f) => !f.nome.startsWith("loja_"))
   p.videos = p.videos.filter((f) => !f.nome.startsWith("loja_"))
 
@@ -365,7 +467,7 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
     }
     if (!prints.length) {
       throw new Error(
-        `nenhum serviço conseguiu ler este produto da TikTok Shop Brasil${produtoId ? ` (${produtoId})` : ""}. Toque em "Anexar prints" e mande de 2 a 4 prints da página do produto.`,
+        `nenhum serviço conseguiu ler este produto da TikTok Shop Brasil${produtoId ? ` (${produtoId})` : ""}; veja os detalhes da busca`,
       )
     }
     const l = await lerPrints({ cfg: await lerConfig(), fotos: prints })
