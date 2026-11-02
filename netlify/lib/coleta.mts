@@ -158,7 +158,7 @@ function coletarImagens(x: any): string[] {
   return [...new Set(achadas)]
 }
 
-type VideoAchado = { url?: string; pagina?: string; views: number; duracao?: number }
+type VideoAchado = { url?: string; pagina?: string; views: number; nota?: number; duracao?: number }
 
 /** Vídeos de criadores que promovem o produto: link direto do arquivo quando houver, senão a página do vídeo. */
 function coletarVideos(x: any): VideoAchado[] {
@@ -184,7 +184,7 @@ function coletarVideos(x: any): VideoAchado[] {
     if (!pagina && /^\d{15,21}$/.test(idv) && autor) pagina = `https://www.tiktok.com/@${String(autor).replace(/^@/, "")}/video/${idv}`
     const views = Number(el.play_count ?? el.playCount ?? el.plays ?? el.views ?? el.view_count ?? el.stats?.playCount ?? 0) || 0
     const duracao = Number(el.duration_secs ?? el.durationSecs ?? el.duration ?? el.video?.duration ?? el.videoMeta?.duration ?? 0) || undefined
-    if (direto || pagina) out.push({ url: direto, pagina, views, duracao })
+    if (direto || pagina) out.push({ url: direto, pagina, views, nota: notaEngajamento(el), duracao })
   }
   const vistos = new Set<string>()
   return out
@@ -194,7 +194,7 @@ function coletarVideos(x: any): VideoAchado[] {
       vistos.add(chave)
       return !v.duracao || (v.duracao >= 5 && v.duracao <= 120)
     })
-    .sort((a, b) => b.views - a.views)
+    .sort((a, b) => (b.nota ?? b.views) - (a.nota ?? a.views))
 }
 
 export function normalizar(bruto: any): DadosLoja {
@@ -269,6 +269,34 @@ export function itemDoHtml(html: string): any | null {
   return null
 }
 
+/** Números públicos do vídeo, aceitando os formatos da página e da Apify. */
+export function numerosDoVideo(x: any) {
+  const st = { ...(x?.stats || {}), ...(x?.statsV2 || {}) }
+  const n = (...v: unknown[]) => Number(v.find((y) => y != null && y !== "") ?? 0) || 0
+  return {
+    views: n(st.playCount, x?.playCount, x?.play_count, x?.views),
+    curtidas: n(st.diggCount, x?.diggCount, x?.like_count, x?.likes),
+    comentarios: n(st.commentCount, x?.commentCount, x?.comment_count),
+    compartilhamentos: n(st.shareCount, x?.shareCount, x?.share_count),
+    salvos: n(st.collectCount, x?.collectCount, x?.collect_count),
+  }
+}
+
+/**
+ * Nota de engajamento: interações pesam mais que visualização, e comentário, compartilhamento e salvar pesam mais
+ * que curtida (mostram intenção). O público (visualizações) entra como desempate.
+ */
+export function notaEngajamento(x: any): number {
+  const k = numerosDoVideo(x)
+  return k.curtidas + 2 * k.comentarios + 3 * k.compartilhamentos + 2 * k.salvos + 0.02 * k.views
+}
+
+const resumoNumeros = (x: any) => {
+  const k = numerosDoVideo(x)
+  const f = (v: number) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)} mi` : v >= 1e3 ? `${(v / 1e3).toFixed(1)} mil` : String(v))
+  return `${f(k.views)} views, ${f(k.curtidas)} curtidas, ${f(k.comentarios)} coment., ${f(k.compartilhamentos)} compart.`
+}
+
 /** O que o TikTok oferece para baixar este vídeo. downloadSetting 0 = o criador permite download. */
 export function opcoesDeDownload(item: any) {
   const v = item?.video || {}
@@ -306,15 +334,15 @@ async function baixarArquivoTikTok(u: string, cookie: string): Promise<Uint8Arra
 }
 
 /**
- * Baixa até `quantos` vídeos das páginas dadas. Prefere os que o próprio TikTok deixa baixar; os outros entram
- * só se faltar, pelo endereço do player e, por último, pela Apify.
+ * Baixa até `quantos` vídeos das páginas dadas, escolhendo os de maior engajamento e público. Cada escolhido é
+ * baixado pelo download do próprio TikTok quando o criador permite; senão pelo endereço do player; por último, Apify.
  */
 async function baixarVideos(paginas: string[], quantos: number, diag: string[]): Promise<Uint8Array[]> {
   if (!quantos || !paginas.length) return []
   const abertas = await Promise.all([...new Set(paginas)].slice(0, 8).map(abrirPagina))
   const ordem = [
-    ...abertas.filter((a) => a.item && opcoesDeDownload(a.item).nativo),
-    ...abertas.filter((a) => !(a.item && opcoesDeDownload(a.item).nativo)),
+    ...abertas.filter((a) => a.item).sort((x, y) => notaEngajamento(y.item) - notaEngajamento(x.item)),
+    ...abertas.filter((a) => !a.item),
   ]
   const out: Uint8Array[] = []
   const semArquivo: string[] = []
@@ -339,7 +367,7 @@ async function baixarVideos(paginas: string[], quantos: number, diag: string[]):
     }
     if (dados) {
       out.push(dados)
-      diag.push(`vídeo ${curto(a.pagina)}: baixado pelo ${via}`)
+      diag.push(`vídeo ${curto(a.pagina)} (${resumoNumeros(a.item)}): baixado pelo ${via}`)
     } else semArquivo.push(a.pagina)
   }
   if (out.length < quantos && semArquivo.length) {
@@ -389,11 +417,11 @@ async function buscarVideos(termo: string, quantos: number, diag: string[]): Pro
     const candidatos = r.itens
       .map((it: any) => ({
         pagina: [it?.webVideoUrl, it?.url].find((u) => ehUrl(u) && /tiktok\.com\/@[^/]+\/video\//.test(u)) as string | undefined,
-        views: Number(it?.playCount ?? it?.stats?.playCount ?? 0) || 0,
+        nota: notaEngajamento(it),
         duracao: Number(it?.videoMeta?.duration ?? it?.duration ?? 0) || undefined,
       }))
       .filter((v) => v.pagina && (!v.duracao || (v.duracao >= 5 && v.duracao <= 90)))
-      .sort((a, b) => b.views - a.views)
+      .sort((a, b) => b.nota - a.nota)
     diag.push(`busca no TikTok por "${termo}": HTTP ${r.status}, ${candidatos.length} vídeo(s) aproveitável(is)`)
     return [...new Set(candidatos.map((c) => c.pagina!))].slice(0, quantos * 3)
   } catch (e) {

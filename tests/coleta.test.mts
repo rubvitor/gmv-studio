@@ -254,16 +254,16 @@ test("plano C: lojas sem dados, usa os prints e busca vídeos no TikTok", async 
 })
 
 
-const paginaVideo = (id: string, autor: string, ajuste: number, extra: any = {}) =>
+const paginaVideo = (id: string, autor: string, ajuste: number, stats: any = {}) =>
   `<html><head><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({
     __DEFAULT_SCOPE__: { "webapp.video-detail": { itemInfo: { itemStruct: {
-      id, author: { uniqueId: autor, downloadSetting: ajuste },
-      video: { duration: 25, playAddr: `https://v16-webapp.example/${id}/play.mp4`, downloadAddr: `https://v16-webapp.example/${id}/download.mp4`, ...extra },
+      id, author: { uniqueId: autor, downloadSetting: ajuste }, stats,
+      video: { duration: 25, playAddr: `https://v16-webapp.example/${id}/play.mp4`, downloadAddr: `https://v16-webapp.example/${id}/download.mp4` },
     } } } },
   })}</script></head></html>`
 
-test("opções de download: nativo só quando o criador permite", async () => {
-  const { itemDoHtml, opcoesDeDownload } = await import("../netlify/lib/coleta.mts")
+test("opções de download: nativo só quando o criador permite; nota de engajamento", async () => {
+  const { itemDoHtml, opcoesDeDownload, notaEngajamento } = await import("../netlify/lib/coleta.mts")
   const permite = opcoesDeDownload(itemDoHtml(paginaVideo("1", "a", 0)))
   assert.equal(permite.nativo, "https://v16-webapp.example/1/download.mp4")
   const bloqueia = opcoesDeDownload(itemDoHtml(paginaVideo("2", "b", 3)))
@@ -271,20 +271,25 @@ test("opções de download: nativo só quando o criador permite", async () => {
   assert.equal(bloqueia.nativo, "")
   assert.deepEqual(bloqueia.alternativos, ["https://v16-webapp.example/2/play.mp4"])
   assert.equal(itemDoHtml("<html>sem dados</html>"), null)
+  // compartilhamentos e comentários pesam mais que curtidas; views desempatam
+  assert.ok(notaEngajamento({ stats: { diggCount: 100, shareCount: 50 } }) > notaEngajamento({ stats: { diggCount: 200 } }))
+  assert.ok(notaEngajamento({ playCount: 10000, diggCount: 10 }) > notaEngajamento({ playCount: 100, diggCount: 10 }))
 })
 
-test("links de vídeo: prefere o download do próprio TikTok e usa o player só se faltar", async () => {
+test("escolhe os vídeos de maior engajamento; cada um baixado pelo nativo quando permitido", async () => {
   const baixados: string[] = []
   let cookieUsado = ""
   let nAsset = 400
+  const fraco = "https://www.tiktok.com/@fraco/video/7000000000000000010"
+  const forteBloqueado = "https://www.tiktok.com/@forte/video/7000000000000000011"
+  const medioPermite = "https://www.tiktok.com/@medio/video/7000000000000000012"
   globalThis.fetch = (async (url: any, init: any = {}) => {
     const u = String(url)
     if (u.includes("scrapesage")) return Response.json([])
-    if (u === "https://www.tiktok.com/@bloqueia/video/7000000000000000011") {
-      return new Response(paginaVideo("11", "bloqueia", 3), { headers: { "set-cookie": "tt_chain_token=abc; Path=/" } })
-    }
-    if (u === "https://www.tiktok.com/@permite/video/7000000000000000012") {
-      return new Response(paginaVideo("12", "permite", 0), { headers: { "set-cookie": "tt_chain_token=xyz; Path=/" } })
+    if (u === fraco) return new Response(paginaVideo("10", "fraco", 0, { playCount: 500, diggCount: 5 }))
+    if (u === forteBloqueado) return new Response(paginaVideo("11", "forte", 3, { playCount: 900000, diggCount: 40000, commentCount: 900, shareCount: 3000, collectCount: 2000 }))
+    if (u === medioPermite) {
+      return new Response(paginaVideo("12", "medio", 0, { playCount: 80000, diggCount: 3000, commentCount: 100, shareCount: 200 }), { headers: { "set-cookie": "tt_chain_token=xyz; Path=/" } })
     }
     if (u.startsWith("https://v16-webapp.example/")) {
       baixados.push(u)
@@ -303,18 +308,15 @@ test("links de vídeo: prefere o download do próprio TikTok e usa o player só 
   const p: any = {
     id: "p14", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3,
     status: "coletando", videos: [], fotos: [{ asset: { id: "u1", file_path: "print1.png" }, nome: "print1.png", tipo: "image/png", tamanho: 2000 }],
-    linksVideos: ["https://www.tiktok.com/@bloqueia/video/7000000000000000011", "https://www.tiktok.com/@permite/video/7000000000000000012"],
+    linksVideos: [fraco, forteBloqueado, medioPermite],
   }
-  await coletar(p, { maxVideos: 1 })
-  // com só 1 vídeo pedido, fica o que o criador deixa baixar, pelo download nativo e com o cookie da página
-  assert.deepEqual(baixados, ["https://v16-webapp.example/12/download.mp4"])
+  await coletar(p)
+  // os 2 de maior engajamento, na ordem da nota; o forte pelo player (download desativado), o médio pelo nativo
+  assert.deepEqual(baixados, ["https://v16-webapp.example/11/play.mp4", "https://v16-webapp.example/12/download.mp4"])
   assert.equal(cookieUsado, "tt_chain_token=xyz")
-  assert.match(p.diagnostico.join("\n"), /vídeo tiktok\.com\/@permite\/video\/7000000000000000012: baixado pelo download do próprio TikTok/)
-
-  baixados.length = 0
-  p.videos = []
-  await coletar(p, { maxVideos: 2 })
-  assert.deepEqual(baixados, ["https://v16-webapp.example/12/download.mp4", "https://v16-webapp.example/11/play.mp4"])
-  assert.match(p.diagnostico.join("\n"), /baixado pelo endereço do player \(o criador desativou o download\)/)
+  const d = p.diagnostico.join("\n")
+  assert.match(d, /@forte\/video\/7000000000000000011 \(900\.0 mil views, 40\.0 mil curtidas, 900 coment\., 3\.0 mil compart\.\): baixado pelo endereço do player \(o criador desativou o download\)/)
+  assert.match(d, /@medio\/video\/7000000000000000012 \(80\.0 mil views.*\): baixado pelo download do próprio TikTok/)
+  assert.ok(!d.includes("@fraco"))
   assert.equal(p.videos.length, 2)
 })
