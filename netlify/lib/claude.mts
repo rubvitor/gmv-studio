@@ -145,3 +145,24 @@ Responda: {"aprovado": true|false, "problemas": ["..."], "correcoes": "instruç�
   const v = extrairJSON<Veredito>(resp)
   return { aprovado: !!v.aprovado, problemas: v.problemas || [], correcoes: v.correcoes || "" }
 }
+
+export type LeituraPrints = { nome: string; busca: string; fatos: string[] }
+
+/** Lê prints da página do produto (quando nenhum serviço consegue ler a loja) e devolve nome, termo de busca e fatos. */
+export async function lerPrints(o: { cfg: Configuracoes; fotos: { bytes: Uint8Array; tipo: string }[] }): Promise<LeituraPrints> {
+  const sistema = "Você lê prints da página de um produto na TikTok Shop Brasil. Responda SOMENTE com um objeto JSON válido."
+  const pedido = `Leia as imagens e responda com este JSON:
+{
+  "nome": "nome curto do produto em português, como aparece na página",
+  "busca": "de 2 a 5 palavras em português para achar no TikTok vídeos de pessoas mostrando ESTE tipo de produto (tipo do produto + a característica mais marcante; inclua a marca só se for conhecida)",
+  "fatos": ["só o que está escrito nas imagens: preço, especificações, benefícios, variações, avaliações"]
+}`
+  const conteudo: Bloco[] = [...o.fotos.slice(0, 6).map((f) => imagem(f.bytes, f.tipo)), { type: "text", text: pedido }]
+  const j = extrairJSON<any>(await perguntar(o.cfg.modeloConferencia, sistema, conteudo, 1500))
+  const nome = String(j?.nome || "").trim()
+  return {
+    nome,
+    busca: String(j?.busca || nome).trim(),
+    fatos: Array.isArray(j?.fatos) ? j.fatos.map((f: unknown) => String(f).trim()).filter(Boolean).slice(0, 15) : [],
+  }
+}

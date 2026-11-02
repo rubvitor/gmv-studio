@@ -3,7 +3,8 @@
 // Vídeos que vêm só com o endereço da página são baixados por um ator de vídeos do TikTok.
 // Variável: APIFY_TOKEN.
 
-import { arquivos, type Arquivo, type Produto } from "./store.mts"
+import { arquivos, lerConfig, type Arquivo, type Produto } from "./store.mts"
+import { lerPrints } from "./claude.mts"
 import { enviarAsset } from "./comfy.mts"
 import { env } from "./http.mts"
 import { dimensoesImagem, ehMp4, tipoImagem } from "./util.mts"
@@ -82,17 +83,30 @@ export async function resolverLink(link: string): Promise<{ url: string; produto
 }
 
 // Serviços tentados em ordem até um trazer os dados do produto. Cada um tem o seu formato de entrada.
-type Estrategia = { nome: string; ator: string; entrada: (alvo: string) => Record<string, unknown> }
+type Alvo = { id?: string; url: string }
+type Estrategia = { nome: string; ator: string; entrada: (a: Alvo) => Record<string, unknown> | null }
+const PROXY_BR = { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"], apifyProxyCountry: "BR" }
 export const ESTRATEGIAS: Estrategia[] = [
   {
     nome: "scrapesage",
     ator: "scrapesage~tiktok-shop-scraper",
-    entrada: (alvo) => ({ mode: "product", productUrls: [alvo], region: "BR", maxItems: 1, includeAffiliateVideos: true, includeReviews: false }),
+    entrada: (a) => ({
+      mode: "product", productUrls: [a.id ? `https://shop.tiktok.com/br/pdp/${a.id}` : a.url], region: "BR", maxItems: 1,
+      includeAffiliateVideos: true, includeReviews: false,
+    }),
+  },
+  {
+    nome: "scrapesage (proxy no Brasil)",
+    ator: "scrapesage~tiktok-shop-scraper",
+    entrada: (a) => (a.id ? {
+      mode: "product", productUrls: [a.id], region: "BR", maxItems: 1, includeAffiliateVideos: true, includeReviews: false,
+      proxyConfiguration: PROXY_BR,
+    } : null),
   },
   {
     nome: "jungle",
     ator: ATOR_PADRAO,
-    entrada: (alvo) => ({ items: [alvo], country: "br", maxItems: 1, includeCreatorVideos: true }),
+    entrada: (a) => ({ items: [a.id ? `https://www.tiktok.com/view/product/${a.id}?region=BR` : a.url], country: "br", maxItems: 1, includeCreatorVideos: true }),
   },
 ]
 const ATOR_VIDEOS = "clockworks~tiktok-scraper"
@@ -243,7 +257,7 @@ async function baixarPelaPagina(paginas: string[], diag: string[]): Promise<Uint
   if (!paginas.length) return []
   try {
     const r = await rodarAtor(ATOR_VIDEOS, {
-      postURLs: paginas, shouldDownloadVideos: true, shouldDownloadCovers: false,
+      postURLs: paginas, proxyCountryCode: "BR", shouldDownloadVideos: true, shouldDownloadCovers: false,
       shouldDownloadSlideshowImages: false, shouldDownloadSubtitles: false, resultsPerPage: paginas.length,
     }, 280)
     const links: string[] = []
@@ -268,6 +282,29 @@ async function baixarPelaPagina(paginas: string[], diag: string[]): Promise<Uint
   }
 }
 
+/** Procura no TikTok (resultados do Brasil) vídeos de pessoas mostrando o produto; devolve as páginas dos mais vistos. */
+async function buscarVideos(termo: string, quantos: number, diag: string[]): Promise<string[]> {
+  try {
+    const r = await rodarAtor(ATOR_VIDEOS, {
+      searchQueries: [termo], searchSection: "/video", resultsPerPage: 15, proxyCountryCode: "BR",
+      shouldDownloadVideos: false, shouldDownloadCovers: false, shouldDownloadSlideshowImages: false, shouldDownloadSubtitles: false,
+    }, 200)
+    const candidatos = r.itens
+      .map((it: any) => ({
+        pagina: [it?.webVideoUrl, it?.url].find((u) => ehUrl(u) && /tiktok\.com\/@[^/]+\/video\//.test(u)) as string | undefined,
+        views: Number(it?.playCount ?? it?.stats?.playCount ?? 0) || 0,
+        duracao: Number(it?.videoMeta?.duration ?? it?.duration ?? 0) || undefined,
+      }))
+      .filter((v) => v.pagina && (!v.duracao || (v.duracao >= 5 && v.duracao <= 90)))
+      .sort((a, b) => b.views - a.views)
+    diag.push(`busca no TikTok por "${termo}": HTTP ${r.status}, ${candidatos.length} vídeo(s) aproveitável(is)`)
+    return [...new Set(candidatos.map((c) => c.pagina!))].slice(0, quantos)
+  } catch (e) {
+    diag.push(`busca no TikTok: ${String((e as any)?.message || e).slice(0, 160)}`)
+    return []
+  }
+}
+
 async function anexar(p: Produto, dados: Uint8Array, nome: string, tipo: string, categoria: "foto" | "video") {
   await arquivos.guardar(p.id, nome, dados)
   const asset = await enviarAsset(dados, `gmv/${p.id}/${nome}`, tipo)
@@ -287,12 +324,12 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
   p.diagnostico = diag
   const { url, produtoId } = await resolverLink(p.link)
   diag.push(`link: ${produtoId ? `produto ${produtoId}` : `sem número de produto (${url.slice(0, 120)})`}`)
-  const alvo = produtoId ? `https://shop.tiktok.com/br/pdp/${produtoId}` : url
-
   let bruto: any = null
   for (const e of ESTRATEGIAS) {
+    const entrada = e.entrada({ id: produtoId, url })
+    if (!entrada) continue
     try {
-      const r = await rodarAtor(e.ator, e.entrada(alvo))
+      const r = await rodarAtor(e.ator, entrada)
       const lista = r.itens.map(desembrulhar)
       const achado = lista.find(temDados)
       const erroAtor = r.status >= 300 ? ` ${r.texto.slice(0, 160)}` : ""
@@ -306,16 +343,38 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
       diag.push(`${e.nome}: ${String(err?.message || err).slice(0, 160)}`)
     }
   }
-  if (!bruto) throw new Error(`nenhum serviço trouxe os dados do produto ${produtoId || ""}`.trim())
-  const d = normalizar(bruto)
-  diag.push(`dados: "${d.nome.slice(0, 60)}", ${d.imagens.length} foto(s), ${d.videos.length} vídeo(s) de criadores`)
-
   p.fotos = p.fotos.filter((f) => !f.nome.startsWith("loja_"))
   p.videos = p.videos.filter((f) => !f.nome.startsWith("loja_"))
+
+  let d: DadosLoja
+  let busca = ""
+  if (bruto) {
+    d = normalizar(bruto)
+    busca = d.nome.split(/\s+/).slice(0, 6).join(" ")
+    diag.push(`dados: "${d.nome.slice(0, 60)}", ${d.imagens.length} foto(s), ${d.videos.length} vídeo(s) de criadores`)
+    p.infoLoja = [d.nome && `Nome na loja: ${d.nome}`, ...d.fatos, d.descricao && `Descrição da loja:\n${d.descricao}`]
+      .filter(Boolean)
+      .join("\n")
+  } else {
+    // Plano C: nenhum serviço leu a loja; os seus prints da página viram a fonte de nome e fatos.
+    const prints: { bytes: Uint8Array; tipo: string }[] = []
+    for (const f of p.fotos.slice(0, 6)) {
+      const bytes = await arquivos.ler(p.id, f.nome)
+      const tipo = bytes && tipoImagem(bytes)
+      if (bytes && tipo) prints.push({ bytes, tipo })
+    }
+    if (!prints.length) {
+      throw new Error(
+        `nenhum serviço conseguiu ler este produto da TikTok Shop Brasil${produtoId ? ` (${produtoId})` : ""}. Toque em "Anexar prints" e mande de 2 a 4 prints da página do produto.`,
+      )
+    }
+    const l = await lerPrints({ cfg: await lerConfig(), fotos: prints })
+    d = { nome: l.nome, descricao: "", fatos: l.fatos, imagens: [], videos: [] }
+    busca = l.busca
+    diag.push(`usando os seus prints: "${l.nome.slice(0, 60)}", busca de vídeos: "${busca}"`)
+    p.infoLoja = [l.nome && `Nome (lido dos prints): ${l.nome}`, ...l.fatos].filter(Boolean).join("\n")
+  }
   if (!p.nome && d.nome) p.nome = d.nome
-  p.infoLoja = [d.nome && `Nome na loja: ${d.nome}`, ...d.fatos, d.descricao && `Descrição da loja:\n${d.descricao}`]
-    .filter(Boolean)
-    .join("\n")
 
   let nf = 0
   for (const u of d.imagens) {
@@ -339,6 +398,12 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
   }
   if (nv < maxVideos && pendentes.length) {
     for (const dados of await baixarPelaPagina(pendentes.slice(0, maxVideos - nv), diag)) {
+      await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
+    }
+  }
+  if (nv < maxVideos && busca && !p.videos.length) {
+    const paginas = await buscarVideos(busca, maxVideos - nv, diag)
+    for (const dados of await baixarPelaPagina(paginas, diag)) {
       await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
     }
   }

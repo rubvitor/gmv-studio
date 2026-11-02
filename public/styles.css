@@ -62,7 +62,7 @@ ol.passos li > span { display: block; margin-bottom: 8px; }
 details.anexos > summary { cursor: pointer; color: var(--cobalto); font-weight: 700; min-height: 44px; display: flex; align-items: center; }
 details.anexos > label { margin-top: 12px; }
 .alternar .dica { color: var(--grafite); font-size: 0.85rem; }
-a.botao { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+a.botao, label.botao { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .bloco.alerta { border-left: 4px solid var(--vermelho); }
 .cabeca { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .sub { color: var(--grafite); font-size: 0.92rem; }

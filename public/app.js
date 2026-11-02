@@ -270,9 +270,9 @@ function NovoProduto({ concluir, avisar, coleta }) {
       ? html`<label class="alternar"><span>Buscar fotos, informações e vídeos na TikTok Shop<span class="dica"> · os vídeos de quem já vende o produto, os mais vistos primeiro</span></span><input type="checkbox" checked=${buscar} onChange=${(e) => setBuscar(e.target.checked)} /></label>`
       : html`<p class="sub">Para o app buscar fotos e vídeos sozinho a partir do link, crie a variável APIFY_TOKEN no Netlify. Por enquanto, anexe as fotos.</p>`}
     <label class="alternar">Gerar o vídeo assim que terminar<input type="checkbox" checked=${gerarJa} onChange=${(e) => setGerarJa(e.target.checked)} /></label>
-    <details class="anexos" open=${!buscar}>
-      <summary>${buscar ? "Anexar fotos ou vídeos extras (opcional)" : "Fotos e vídeos"}</summary>
-      <label class="campo">${buscar ? "Fotos extras" : "Fotos do produto"}<span class="dica">Prints da listagem e fotos com informações. Elas guiam o roteiro, mas não aparecem no vídeo.</span>
+    <details class="anexos" open>
+      <summary>${buscar ? "Prints da página do produto (recomendado)" : "Fotos e vídeos"}</summary>
+      <label class="campo">${buscar ? "Prints da página do produto" : "Fotos do produto"}<span class="dica">${buscar ? "De 2 a 4 prints da página do produto no TikTok. Se a busca automática não conseguir ler o produto, o app usa estes prints. " : ""}Eles guiam o roteiro, mas não aparecem no vídeo.</span>
         <input type="file" accept="image/*" multiple onChange=${(e) => setFotos([...e.target.files])} /></label>
       <label class="campo">Vídeos de referência<span class="dica">Até 80 MB cada. Servem só para o ritmo e a demonstração.</span>
         <input type="file" accept="video/*" multiple onChange=${(e) => setVideos([...e.target.files])} /></label>
@@ -289,7 +289,26 @@ function NovoProduto({ concluir, avisar, coleta }) {
 function Produtos({ avisar, irParaAnuncio, coleta }) {
   const [lista, setLista] = useState(null)
   const [novo, setNovo] = useState(false)
+  const [enviando, setEnviando] = useState({ id: "", msg: "" })
   const carregar = () => api("produtos").then(setLista).catch((e) => avisar(e.message))
+  const anexarPrints = async (p, escolhidos) => {
+    const lista = [...escolhidos]
+    if (!lista.length) return
+    try {
+      for (let i = 0; i < lista.length; i++) {
+        await enviarArquivo(p.id, lista[i], "foto", (x) => setEnviando({ id: p.id, msg: `Enviando ${i + 1} de ${lista.length}: ${Math.round(x * 100)}%` }))
+      }
+      setEnviando({ id: p.id, msg: "Guardando…" })
+      const total = p.fotos.length + lista.length
+      for (let t = 0; t < 30; t++) {
+        const atual = await api(`produtos/${p.id}`)
+        if (atual.fotos.length >= total) break
+        await new Promise((r) => setTimeout(r, 3000))
+      }
+      await api(`produtos/${p.id}/${coleta ? "coletar" : "fila"}`, { method: "POST" })
+      avisar(coleta ? "Prints enviados. Buscando os vídeos e montando o pacote." : "Prints enviados. Montando o pacote.")
+    } catch (e) { avisar(e.message) } finally { setEnviando({ id: "", msg: "" }); carregar() }
+  }
   useEffect(() => { carregar(); const t = setInterval(carregar, 10000); return () => clearInterval(t) }, [])
   if (novo) return html`<${NovoProduto} avisar=${avisar} coleta=${coleta} concluir=${() => { setNovo(false); carregar() }} />`
   const buscarDeNovo = async (p) => { try { await api(`produtos/${p.id}/coletar`, { method: "POST" }); avisar("Buscando na TikTok Shop."); carregar() } catch (e) { avisar(e.message) } }
@@ -302,10 +321,12 @@ function Produtos({ avisar, irParaAnuncio, coleta }) {
       lista.map((p) => html`<section class="bloco">
         <div class="cabeca"><h3>${p.nome || p.link}</h3><span class=${`etapa ${p.status === "na_fila" ? "espera" : p.status === "erro" ? "erro" : p.status === "usado" ? "ok" : ""}`}>${rotulo[p.status]}</span></div>
         <p class="sub">${p.fotos.length} foto(s), ${p.videos.length} vídeo(s)${p.origem ? ` (da loja: ${p.origem.fotos} foto(s), ${p.origem.videos} de ${p.origem.videosEncontrados} vídeo(s) de criadores)` : ""} · prioridade ${p.prioridade}${p.erro ? ` · ${p.erro}` : ""}</p>
+        ${enviando.id === p.id && html`<p class="progresso" aria-live="polite">${enviando.msg}</p>`}
         ${p.diagnostico?.length > 0 && html`<details class="anexos" open=${p.status === "erro"}><summary>Detalhes da busca</summary><ul class="log">${p.diagnostico.map((l) => html`<li>${l}</li>`)}</ul></details>`}
         <div class="linha">
           ${["na_fila", "usado"].includes(p.status) && html`<button class="botao sec" onClick=${() => gerar(p)}>Gerar anúncio agora</button>`}
           ${["rascunho", "erro"].includes(p.status) && p.fotos.length > 0 && html`<button class="botao sec" onClick=${async () => { await api(`produtos/${p.id}/fila`, { method: "POST" }); carregar() }}>Colocar na fila</button>`}
+          ${["rascunho", "erro"].includes(p.status) && html`<label class="botao">Anexar prints<input type="file" accept="image/*" multiple hidden disabled=${!!enviando.id} onChange=${(e) => anexarPrints(p, e.target.files)} /></label>`}
           ${coleta && ["rascunho", "erro"].includes(p.status) && html`<button class="botao sec" onClick=${() => buscarDeNovo(p)}>Buscar na TikTok Shop</button>`}
           <a href=${p.link} target="_blank" rel="noopener">Ver na TikTok Shop</a>
           <button class="botao perigo" onClick=${async () => { if (confirm("Apagar este produto?")) { await api(`produtos/${p.id}`, { method: "DELETE" }); carregar() } }}>Apagar</button>

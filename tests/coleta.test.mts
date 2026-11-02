@@ -6,6 +6,7 @@ import { dimensoesImagem, tipoImagem, ehMp4 } from "../netlify/lib/util.mts"
 process.env.COMFY_API_KEY = "x"
 process.env.COMFY_DEPLOYMENT_URL = "https://dep.run.comfy.app"
 process.env.APIFY_TOKEN = "tok"
+process.env.ANTHROPIC_API_KEY = "x"
 
 const preencher = (cab: number[], total = 2000) => {
   const b = new Uint8Array(total)
@@ -95,7 +96,7 @@ test("link curto → fotos, vídeos mais vistos, pacote e anúncio", async () =>
   await produtos.salvar(p)
   const origem = await coletar(p)
 
-  assert.deepEqual(apifyCorpo, { items: ["https://shop.tiktok.com/br/pdp/1729587769570005671"], country: "br", maxItems: 1, includeCreatorVideos: true })
+  assert.deepEqual(apifyCorpo, { items: ["https://www.tiktok.com/view/product/1729587769570005671?region=BR"], country: "br", maxItems: 1, includeCreatorVideos: true })
   assert.match(p.diagnostico!.join("\n"), /scrapesage: HTTP 200, 0 registro/)
   assert.match(p.diagnostico!.join("\n"), /jungle: HTTP 200, 1 registro/)
   assert.equal(apifyAuth, "Bearer tok")
@@ -200,7 +201,55 @@ test("nenhum serviço trouxe dados: erro com o diagnóstico de cada um", async (
   }) as any
   const { coletar } = await import("../netlify/lib/coleta.mts")
   const p: any = { id: "p11", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3, status: "coletando", fotos: [], videos: [] }
-  await assert.rejects(coletar(p), /nenhum serviço trouxe os dados do produto 1738027982368572776/)
+  await assert.rejects(coletar(p), /nenhum serviço conseguiu ler este produto da TikTok Shop Brasil \(1738027982368572776\). Toque em "Anexar prints"/)
   assert.match(p.diagnostico[1], /scrapesage: HTTP 403, 1 registro\(s\) .*actor-is-not-rented/)
-  assert.match(p.diagnostico[2], /jungle: HTTP 200, 0 registro/)
+  assert.match(p.diagnostico[2], /scrapesage \(proxy no Brasil\): HTTP 403/)
+  assert.match(p.diagnostico[3], /jungle: HTTP 200, 0 registro/)
+})
+
+test("plano C: lojas sem dados, usa os prints e busca vídeos no TikTok", async () => {
+  const chamadasVideos: any[] = []
+  let nAsset = 200
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    const u = String(url)
+    if (u.includes("scrapesage") || u.includes("jungle_synthesizer")) return Response.json([])
+    if (u.startsWith("https://api.anthropic.com")) {
+      const corpo = JSON.parse(init.body)
+      assert.equal(corpo.messages[0].content[0].type, "image")
+      return Response.json({ content: [{ type: "text", text: JSON.stringify({ nome: "Cabo USB-C 240W", busca: "cabo usb c 240w", fatos: ["R$ 29,99", "Fio reforçado"] }) }] })
+    }
+    if (u.startsWith("https://api.apify.com/v2/acts/clockworks~tiktok-scraper/")) {
+      const e = JSON.parse(init.body)
+      chamadasVideos.push(e)
+      if (e.searchQueries) {
+        assert.deepEqual(e.searchQueries, ["cabo usb c 240w"])
+        assert.equal(e.proxyCountryCode, "BR")
+        return Response.json([
+          { webVideoUrl: "https://www.tiktok.com/@a/video/7000000000000000001", playCount: 10, videoMeta: { duration: 20 } },
+          { webVideoUrl: "https://www.tiktok.com/@b/video/7000000000000000002", playCount: 900, videoMeta: { duration: 30 } },
+          { webVideoUrl: "https://www.tiktok.com/@c/video/7000000000000000003", playCount: 99999, videoMeta: { duration: 300 } },
+        ])
+      }
+      return Response.json(e.postURLs.map((pg: string, i: number) => ({ webVideoUrl: pg, mediaUrls: [`https://api.apify.com/v2/key-value-stores/kv2/records/v${i}.mp4`] })))
+    }
+    if (u.startsWith("https://api.apify.com/v2/key-value-stores/kv2/")) return new Response(MP4)
+    if (u === "https://dep.run.comfy.app/api/v2/assets" && init.method === "POST") return Response.json({ id: `as${++nAsset}`, file_path: "x" })
+    throw new Error("fetch inesperado: " + u)
+  }) as any
+  const { arquivos } = await import("../netlify/lib/store.mts")
+  const { coletar } = await import("../netlify/lib/coleta.mts")
+  await arquivos.guardar("p12", "print1.png", PNG)
+  const p: any = {
+    id: "p12", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3,
+    status: "coletando", videos: [], fotos: [{ asset: { id: "u1", file_path: "print1.png" }, nome: "print1.png", tipo: "image/png", tamanho: 2000 }],
+  }
+  await coletar(p)
+  assert.equal(p.nome, "Cabo USB-C 240W")
+  assert.match(p.infoLoja, /Nome \(lido dos prints\): Cabo USB-C 240W\nR\$ 29,99/)
+  assert.deepEqual(p.fotos.map((f: any) => f.nome), ["print1.png"])
+  // o de 5 minutos fica de fora; o mais visto primeiro
+  assert.deepEqual(chamadasVideos[1].postURLs, ["https://www.tiktok.com/@b/video/7000000000000000002", "https://www.tiktok.com/@a/video/7000000000000000001"])
+  assert.equal(p.videos.length, 2)
+  assert.match(p.diagnostico.join("\n"), /usando os seus prints: "Cabo USB-C 240W", busca de vídeos: "cabo usb c 240w"/)
+  assert.match(p.diagnostico.join("\n"), /busca no TikTok por "cabo usb c 240w": HTTP 200, 2 vídeo/)
 })
