@@ -26,6 +26,8 @@ export type Produto = {
   gerarAoTerminar?: boolean // cria o anúncio assim que o pacote ficar pronto
   diagnostico?: string[] // o que cada serviço respondeu na última busca
   linksVideos?: string[] // páginas de vídeos do TikTok de pessoas vendendo o produto, para referência
+  linksFotos?: string[] // fotos do produto lidas pelo navegador na página da loja (endereços públicos do CDN)
+  infoPagina?: string // texto da página do produto lido pelo navegador (nome, preço, variações, avaliações)
 }
 
 export type EtapaVideo =

@@ -450,7 +450,13 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
   const { url, produtoId } = await resolverLink(p.link)
   diag.push(`link: ${produtoId ? `produto ${produtoId}` : `sem número de produto (${url.slice(0, 120)})`}`)
   let bruto: any = null
-  for (const e of ESTRATEGIAS) {
+  // Dados já lidos pelo navegador logado (rotina pelo Chrome): fotos e texto da página, sem serviços de terceiros.
+  if (p.linksFotos?.length) {
+    const primeira = (p.infoPagina || "").split("\n").map((l) => l.trim()).find((l) => l.length > 10) || ""
+    bruto = { product_name: p.nome || primeira.slice(0, 200), images: p.linksFotos, description: p.infoPagina || "" }
+    diag.push(`dados da página lidos pelo navegador: ${p.linksFotos.length} foto(s)${p.infoPagina ? ", texto da página" : ""}`)
+  }
+  for (const e of bruto ? [] : ESTRATEGIAS) {
     const entrada = e.entrada({ id: produtoId, url })
     if (!entrada) continue
     try {

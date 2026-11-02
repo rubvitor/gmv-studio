@@ -320,3 +320,31 @@ test("escolhe os vídeos de maior engajamento; cada um baixado pelo nativo quand
   assert.ok(!d.includes("@fraco"))
   assert.equal(p.videos.length, 2)
 })
+
+test("dados vindos do navegador: usa as fotos e o texto, sem chamar a Apify", async () => {
+  let nAsset = 500
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    const u = String(url)
+    if (u.includes("api.apify.com")) throw new Error("não deveria chamar a Apify")
+    if (u.startsWith("https://p16-oec-sg.ibyteimg.com/")) return new Response(WEBP)
+    if (u === "https://www.tiktok.com/@medio/video/7000000000000000012") return new Response(paginaVideo("12", "medio", 0, { playCount: 1000, diggCount: 50 }))
+    if (u.startsWith("https://v16-webapp.example/")) return new Response(MP4)
+    if (u === "https://dep.run.comfy.app/api/v2/assets" && init.method === "POST") return Response.json({ id: `as${++nAsset}`, file_path: "x" })
+    throw new Error("fetch inesperado: " + u)
+  }) as any
+  const { coletar } = await import("../netlify/lib/coleta.mts")
+  const p: any = {
+    id: "p15", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3,
+    status: "coletando", videos: [], fotos: [],
+    linksFotos: ["https://p16-oec-sg.ibyteimg.com/tos/a.webp", "https://p16-oec-sg.ibyteimg.com/tos/b.webp"],
+    infoPagina: "Cabo Gamer PD Trançado 240W\nR$ 20,99 (de R$ 49,99)\n4.9 estrelas, 23 vendidos",
+    linksVideos: ["https://www.tiktok.com/@medio/video/7000000000000000012"],
+  }
+  await coletar(p, { maxVideos: 1 })
+  assert.equal(p.nome, "Cabo Gamer PD Trançado 240W")
+  assert.equal(p.fotos.length, 2)
+  assert.equal(p.fotos[0].largura, 1080)
+  assert.match(p.infoLoja, /R\$ 20,99/)
+  assert.equal(p.videos.length, 1)
+  assert.match(p.diagnostico.join("\n"), /dados da página lidos pelo navegador: 2 foto\(s\), texto da página/)
+})

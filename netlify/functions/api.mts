@@ -74,6 +74,8 @@ export default async (req: Request, context: Context) => {
           videos: [],
           gerarAoTerminar: !!b.gerarAoTerminar,
           linksVideos: linksDeVideo(b.linksVideos),
+          linksFotos: linksDeFoto(b.linksFotos),
+          infoPagina: String(b.infoPagina || "").slice(0, 8000) || undefined,
         }
         await produtos.salvar(p)
         return json(p, 201)
@@ -85,6 +87,8 @@ export default async (req: Request, context: Context) => {
         const b = await req.json()
         for (const k of ["link", "nome", "observacoes", "prioridade"] as const) if (k in b) (p as any)[k] = b[k]
         if ("linksVideos" in b) p.linksVideos = linksDeVideo(b.linksVideos)
+        if ("linksFotos" in b) p.linksFotos = linksDeFoto(b.linksFotos)
+        if ("infoPagina" in b) p.infoPagina = String(b.infoPagina || "").slice(0, 8000) || undefined
         await produtos.salvar(p)
         return json(p)
       }
@@ -208,6 +212,12 @@ export default async (req: Request, context: Context) => {
 function linksDeVideo(x: unknown): string[] {
   const lista = Array.isArray(x) ? x : String(x || "").split(/[\s,]+/)
   return [...new Set(lista.map((u) => String(u).trim()).filter((u) => /^https:\/\/([a-z]+\.)?tiktok\.com\//i.test(u)))].slice(0, 6)
+}
+
+/** Fotos do produto (endereços https de imagem), no máximo 12. */
+function linksDeFoto(x: unknown): string[] {
+  const lista = Array.isArray(x) ? x : String(x || "").split(/\s+/)
+  return [...new Set(lista.map((u) => String(u).trim()).filter((u) => /^https:\/\/[^\s]+$/i.test(u)))].slice(0, 12)
 }
 
 function resumo(a: Anuncio) {
