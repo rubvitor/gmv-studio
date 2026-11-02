@@ -403,10 +403,23 @@ function Entrar({ pronto }) {
     <button class="botao">Entrar</button></form></div>`
 }
 
+// ---------- rota na URL (#produtos, #anuncio/<id>): a aba e o anúncio aberto sobrevivem ao recarregar ----------
+const ABAS = ["hoje", "produtos", "anuncios", "ajustes"]
+const ultimaAba = () => { try { return sessionStorage.getItem("gmv_aba") || "hoje" } catch { return "hoje" } }
+const guardarAba = (a) => { try { sessionStorage.setItem("gmv_aba", a) } catch {} }
+function lerRota() {
+  const [a, id] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).split("/")
+  if (a === "anuncio" && id) return { aba: ultimaAba(), aberto: id }
+  return { aba: ABAS.includes(a) ? a : "hoje", aberto: null }
+}
+
 function App() {
   const [logado, setLogado] = useState(!!lerToken())
-  const [aba, setAba] = useState("hoje")
-  const [aberto, setAberto] = useState(null)
+  const [rota, setRota] = useState(lerRota)
+  useEffect(() => { const f = () => setRota(lerRota()); addEventListener("hashchange", f); return () => removeEventListener("hashchange", f) }, [])
+  const { aba, aberto } = rota
+  const irPara = (k) => { guardarAba(k); location.hash = k }
+  const setAberto = (id) => { location.hash = id ? `anuncio/${id}` : ultimaAba() }
   const [status, setStatus] = useState(null)
   const [anuncios, setAnuncios] = useState([])
   const [toast, setToast] = useState("")
@@ -417,7 +430,7 @@ function App() {
   useEffect(() => { if (logado) { recarregar(); const t = setInterval(recarregar, 30000); return () => clearInterval(t) } }, [logado])
   if (!logado) return html`<${Entrar} pronto=${() => setLogado(true)} />`
   const produzindo = anuncios.some((a) => !PARADOS.includes(a.etapa))
-  const abrir = (id) => setAberto(id)
+  const abrir = (id) => { guardarAba(aba); setAberto(id) }
   let conteudo
   if (aberto) conteudo = html`<${DetalheAnuncio} id=${aberto} status=${status} avisar=${avisar} voltar=${() => { setAberto(null); recarregar() }} />`
   else if (aba === "hoje") conteudo = html`<${Hoje} status=${status} anuncios=${anuncios} abrir=${abrir} recarregar=${recarregar} avisar=${avisar} />`
@@ -429,7 +442,7 @@ function App() {
     <header class="topo"><span class="marca"><span class=${`tally ${produzindo ? "on" : ""}`} title=${produzindo ? "Produzindo" : "Parado"}></span>GMV Studio</span>
       <span class="gasto">${status ? `Hoje ${usd(status.custoHojeUSD)}` : ""}</span></header>
     <main>${conteudo}</main>
-    <nav class="abas">${abas.map(([k, rot]) => html`<button aria-current=${!aberto && aba === k ? "page" : undefined} onClick=${() => { setAberto(null); setAba(k) }}><span class="ponto"></span>${rot}</button>`)}</nav>
+    <nav class="abas">${abas.map(([k, rot]) => html`<button aria-current=${!aberto && aba === k ? "page" : undefined} onClick=${() => irPara(k)}><span class="ponto"></span>${rot}</button>`)}</nav>
     ${toast && html`<div class="toast" role="status">${toast}</div>`}
   `
 }

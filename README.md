@@ -5,13 +5,11 @@ escolhe os produtos do dia, escreve o roteiro, gera o vídeo no ComfyUI da nuvem
 
 ## Como funciona
 
-1. **Produtos**: no app, cole o link da TikTok Shop e, de preferência, de 2 a 4 prints da página do produto. Com
-   `APIFY_TOKEN`, o app tenta ler a página do produto (mercado Brasil) por serviços da Apify e baixar as fotos, o nome,
-   o preço, a descrição e os vídeos de criadores mais vistos. Se esses serviços vierem vazios (comum para produtos do
-   Brasil), um navegador de verdade (Puppeteer da Apify, com conexão no Brasil) abre a página do produto e lê nome,
-   fotos e texto. Tudo anônimo: nenhuma conta do TikTok é usada. Só se nada disso funcionar, o Claude lê os seus prints e o app procura no TikTok, com resultados do Brasil, os vídeos mais vistos de
-   pessoas mostrando esse tipo de produto. O que cada serviço respondeu fica em "Detalhes da busca". As fotos guiam o roteiro, mas nunca aparecem no vídeo. O app monta o pacote
-   `.zip`, envia ao ComfyUI e, se marcado "Gerar o vídeo assim que terminar", já cria o anúncio.
+1. **Produtos**: no app, cole o link da TikTok Shop e anexe de 2 a 4 prints da página do produto. O TikTok só mostra
+   produtos do Brasil para quem está logado, então leitores anônimos (Apify) voltam vazios; o app ainda tenta um, barato,
+   e depois o Claude lê os prints (nome, preço, especificações). Os vídeos de referência são automáticos: o app procura no
+   TikTok, com resultados do Brasil, os vídeos públicos mais vistos desse tipo de produto. Nenhuma conta do TikTok é usada
+   e o app não tenta contornar a verificação do TikTok. O que cada etapa respondeu fica em "Detalhes da busca".
 2. **Radar diário** (06:00 de São Paulo): pega os produtos de maior prioridade da fila até completar a meta do dia.
    Na fase 2, com a API de afiliado da TikTok Shop, ele também encontra produtos sozinho.
 3. **Pipeline de cada anúncio** (avança a cada 3 minutos):

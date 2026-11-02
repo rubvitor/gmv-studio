@@ -51,8 +51,7 @@ test("link curto → fotos, vídeos mais vistos, pacote e anúncio", async () =>
       assert.equal(init.redirect, "manual")
       return new Response(null, { status: 301, headers: { location: "https://www.tiktok.com/view/product/1729587769570005671?region=BR&u_code=x" } })
     }
-    if (u.startsWith("https://api.apify.com/v2/acts/scrapesage~tiktok-shop-scraper/")) return Response.json([])
-    if (u.startsWith("https://api.apify.com/v2/acts/jungle_synthesizer~tiktok-shop-product-detail-scraper/run-sync-get-dataset-items")) {
+    if (u.startsWith("https://api.apify.com/v2/acts/scrapesage~tiktok-shop-scraper/run-sync-get-dataset-items")) {
       apifyCorpo = JSON.parse(init.body)
       apifyAuth = init.headers.authorization
       return Response.json([
@@ -96,9 +95,11 @@ test("link curto → fotos, vídeos mais vistos, pacote e anúncio", async () =>
   await produtos.salvar(p)
   const origem = await coletar(p)
 
-  assert.deepEqual(apifyCorpo, { items: ["https://www.tiktok.com/view/product/1729587769570005671?region=BR"], country: "br", maxItems: 1, includeCreatorVideos: true })
-  assert.match(p.diagnostico!.join("\n"), /scrapesage: HTTP 200, 0 registro/)
-  assert.match(p.diagnostico!.join("\n"), /jungle: HTTP 200, 1 registro/)
+  assert.deepEqual(apifyCorpo, {
+    mode: "product", productUrls: ["https://shop.tiktok.com/br/pdp/1729587769570005671"], region: "BR", maxItems: 1,
+    includeAffiliateVideos: true, includeReviews: false,
+  })
+  assert.match(p.diagnostico!.join("\n"), /scrapesage: HTTP 200, 1 registro/)
   assert.equal(apifyAuth, "Bearer tok")
   assert.equal(p.nome, "Fone Bettdow Bluetooth 5.3")
   assert.match(p.infoLoja!, /Preço na loja: 59.9 BRL/)
@@ -192,20 +193,17 @@ test("outro formato: produto aninhado e vídeos só com a página, baixados por 
   assert.match(p.diagnostico.join("\n"), /vídeos pela página: HTTP 200, 2 registro\(s\), 2 baixado/)
 })
 
-test("nenhum serviço trouxe dados: erro com o diagnóstico de cada um", async () => {
+test("loja sem dados e sem prints: erro explica o login do TikTok e pede prints", async () => {
   globalThis.fetch = (async (url: any) => {
     const u = String(url)
     if (u.includes("scrapesage")) return Response.json({ error: { type: "actor-is-not-rented", message: "rent it" } }, { status: 403 })
-    if (u.includes("jungle_synthesizer")) return Response.json([])
     throw new Error("fetch inesperado: " + u)
   }) as any
   const { coletar } = await import("../netlify/lib/coleta.mts")
   const p: any = { id: "p11", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3, status: "coletando", fotos: [], videos: [] }
-  await assert.rejects(coletar(p), /nenhum serviço conseguiu ler este produto da TikTok Shop Brasil \(1738027982368572776\); veja os detalhes/)
+  await assert.rejects(coletar(p), /só mostra produtos do Brasil para quem está logado.*\(1738027982368572776\).*Anexar prints/)
   assert.match(p.diagnostico[1], /scrapesage: HTTP 403, 1 registro\(s\) .*actor-is-not-rented/)
-  assert.match(p.diagnostico[2], /scrapesage \(proxy no Brasil\): HTTP 403/)
-  assert.match(p.diagnostico[3], /jungle: HTTP 200, 0 registro/)
-  assert.match(p.diagnostico[4], /navegador no Brasil: /)
+  assert.equal(p.diagnostico.length, 2)
 })
 
 test("plano C: lojas sem dados, usa os prints e busca vídeos no TikTok", async () => {
@@ -255,53 +253,3 @@ test("plano C: lojas sem dados, usa os prints e busca vídeos no TikTok", async 
   assert.match(p.diagnostico.join("\n"), /busca no TikTok por "cabo usb c 240w": HTTP 200, 2 vídeo/)
 })
 
-test("navegador no Brasil: lojas vazias, a página do produto traz nome, fotos e texto; vídeos pela busca", async () => {
-  let entradaNav: any = null
-  let nAsset = 300
-  const pagina = {
-    url: "https://www.tiktok.com/view/product/1738027982368572776", title: "Cabo USB-C 240W Carga super rápida - TikTok Shop",
-    ogImage: "https://p16-oec-va.ibyteimg.com/tos-maliva-i/capa.jpeg",
-    scripts: [JSON.stringify({ loaderData: { page: { initialData: {
-      productInfo: { product_id: "1738027982368572776", product_base: { title: "Cabo USB-C 240W", desc_detail: "Fio reforçado" },
-        images: [{ url_list: ["https://p16-oec-va.ibyteimg.com/tos-maliva-i/a.jpeg"] }] },
-      recommend: [{ product_id: "1", title: "Outro produto", images: ["https://p16-oec-va.ibyteimg.com/tos-maliva-i/outro.jpeg"] }],
-    } } } })],
-    imgs: ["https://sf16.ttwstatic.com/obj/avatar/x.png"],
-    text: "Cabo USB-C 240W\nR$ 29,99\nFio reforçado",
-  }
-  globalThis.fetch = (async (url: any, init: any = {}) => {
-    const u = String(url)
-    if (u.includes("scrapesage") || u.includes("jungle_synthesizer")) return Response.json([])
-    if (u.startsWith("https://api.apify.com/v2/acts/apify~puppeteer-scraper/")) {
-      entradaNav = JSON.parse(init.body)
-      return Response.json([pagina])
-    }
-    if (u.startsWith("https://api.apify.com/v2/acts/clockworks~tiktok-scraper/")) {
-      const e = JSON.parse(init.body)
-      if (e.searchQueries) return Response.json([{ webVideoUrl: "https://www.tiktok.com/@b/video/7000000000000000002", playCount: 900, videoMeta: { duration: 30 } }])
-      return Response.json(e.postURLs.map((pg: string) => ({ webVideoUrl: pg, mediaUrls: ["https://api.apify.com/v2/key-value-stores/kv3/records/v.mp4"] })))
-    }
-    if (u.startsWith("https://api.apify.com/v2/key-value-stores/kv3/")) return new Response(MP4)
-    if (u === "https://p16-oec-va.ibyteimg.com/tos-maliva-i/a.jpeg" || u === "https://p16-oec-va.ibyteimg.com/tos-maliva-i/capa.jpeg") return new Response(JPEG)
-    if (u === "https://dep.run.comfy.app/api/v2/assets" && init.method === "POST") return Response.json({ id: `as${++nAsset}`, file_path: "x" })
-    throw new Error("fetch inesperado: " + u)
-  }) as any
-  const { coletar } = await import("../netlify/lib/coleta.mts")
-  const p: any = { id: "p13", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3, status: "coletando", fotos: [], videos: [] }
-  await coletar(p)
-  assert.equal(entradaNav.startUrls[0].url, "https://www.tiktok.com/view/product/1738027982368572776?region=BR&locale=pt-BR")
-  assert.equal(entradaNav.proxyConfiguration.apifyProxyCountry, "BR")
-  assert.equal(p.nome, "Cabo USB-C 240W")
-  assert.match(p.infoLoja, /Descrição da loja:\nFio reforçado/)
-  assert.equal(p.fotos.length, 2)
-  assert.equal(p.videos.length, 1)
-  assert.match(p.diagnostico.join("\n"), /navegador no Brasil: HTTP 200, 1 página\(s\), título "Cabo USB-C 240W", 2 imagem/)
-  assert.match(p.diagnostico.join("\n"), /busca no TikTok por "Cabo USB-C 240W"/)
-})
-
-test("navegador barrado pela verificação do TikTok não vira produto", async () => {
-  const { deNavegador } = await import("../netlify/lib/coleta.mts")
-  const r = deNavegador({ title: "Security Check", text: "Verify to continue", imgs: [], scripts: [] }, "1738027982368572776")
-  assert.equal(r._bloqueado, true)
-  assert.equal(r.product_name, "")
-})
