@@ -253,3 +253,68 @@ test("plano C: lojas sem dados, usa os prints e busca vídeos no TikTok", async 
   assert.match(p.diagnostico.join("\n"), /busca no TikTok por "cabo usb c 240w": HTTP 200, 2 vídeo/)
 })
 
+
+const paginaVideo = (id: string, autor: string, ajuste: number, extra: any = {}) =>
+  `<html><head><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({
+    __DEFAULT_SCOPE__: { "webapp.video-detail": { itemInfo: { itemStruct: {
+      id, author: { uniqueId: autor, downloadSetting: ajuste },
+      video: { duration: 25, playAddr: `https://v16-webapp.example/${id}/play.mp4`, downloadAddr: `https://v16-webapp.example/${id}/download.mp4`, ...extra },
+    } } } },
+  })}</script></head></html>`
+
+test("opções de download: nativo só quando o criador permite", async () => {
+  const { itemDoHtml, opcoesDeDownload } = await import("../netlify/lib/coleta.mts")
+  const permite = opcoesDeDownload(itemDoHtml(paginaVideo("1", "a", 0)))
+  assert.equal(permite.nativo, "https://v16-webapp.example/1/download.mp4")
+  const bloqueia = opcoesDeDownload(itemDoHtml(paginaVideo("2", "b", 3)))
+  assert.equal(bloqueia.permitido, false)
+  assert.equal(bloqueia.nativo, "")
+  assert.deepEqual(bloqueia.alternativos, ["https://v16-webapp.example/2/play.mp4"])
+  assert.equal(itemDoHtml("<html>sem dados</html>"), null)
+})
+
+test("links de vídeo: prefere o download do próprio TikTok e usa o player só se faltar", async () => {
+  const baixados: string[] = []
+  let cookieUsado = ""
+  let nAsset = 400
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    const u = String(url)
+    if (u.includes("scrapesage")) return Response.json([])
+    if (u === "https://www.tiktok.com/@bloqueia/video/7000000000000000011") {
+      return new Response(paginaVideo("11", "bloqueia", 3), { headers: { "set-cookie": "tt_chain_token=abc; Path=/" } })
+    }
+    if (u === "https://www.tiktok.com/@permite/video/7000000000000000012") {
+      return new Response(paginaVideo("12", "permite", 0), { headers: { "set-cookie": "tt_chain_token=xyz; Path=/" } })
+    }
+    if (u.startsWith("https://v16-webapp.example/")) {
+      baixados.push(u)
+      if (u.includes("/12/")) cookieUsado = init.headers.cookie
+      return new Response(MP4)
+    }
+    if (u.startsWith("https://api.anthropic.com")) {
+      return Response.json({ content: [{ type: "text", text: JSON.stringify({ nome: "Cabo USB-C 240W", busca: "cabo usb c", fatos: [] }) }] })
+    }
+    if (u === "https://dep.run.comfy.app/api/v2/assets" && init.method === "POST") return Response.json({ id: `as${++nAsset}`, file_path: "x" })
+    throw new Error("fetch inesperado: " + u)
+  }) as any
+  const { arquivos } = await import("../netlify/lib/store.mts")
+  const { coletar } = await import("../netlify/lib/coleta.mts")
+  await arquivos.guardar("p14", "print1.png", PNG)
+  const p: any = {
+    id: "p14", criadoEm: "", link: "https://www.tiktok.com/view/product/1738027982368572776", nome: "", observacoes: "", prioridade: 3,
+    status: "coletando", videos: [], fotos: [{ asset: { id: "u1", file_path: "print1.png" }, nome: "print1.png", tipo: "image/png", tamanho: 2000 }],
+    linksVideos: ["https://www.tiktok.com/@bloqueia/video/7000000000000000011", "https://www.tiktok.com/@permite/video/7000000000000000012"],
+  }
+  await coletar(p, { maxVideos: 1 })
+  // com só 1 vídeo pedido, fica o que o criador deixa baixar, pelo download nativo e com o cookie da página
+  assert.deepEqual(baixados, ["https://v16-webapp.example/12/download.mp4"])
+  assert.equal(cookieUsado, "tt_chain_token=xyz")
+  assert.match(p.diagnostico.join("\n"), /vídeo tiktok\.com\/@permite\/video\/7000000000000000012: baixado pelo download do próprio TikTok/)
+
+  baixados.length = 0
+  p.videos = []
+  await coletar(p, { maxVideos: 2 })
+  assert.deepEqual(baixados, ["https://v16-webapp.example/12/download.mp4", "https://v16-webapp.example/11/play.mp4"])
+  assert.match(p.diagnostico.join("\n"), /baixado pelo endereço do player \(o criador desativou o download\)/)
+  assert.equal(p.videos.length, 2)
+})

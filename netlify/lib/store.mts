@@ -25,6 +25,7 @@ export type Produto = {
   origem?: { fotos: number; videos: number; videosEncontrados: number; em: string } // o que a busca automática trouxe
   gerarAoTerminar?: boolean // cria o anúncio assim que o pacote ficar pronto
   diagnostico?: string[] // o que cada serviço respondeu na última busca
+  linksVideos?: string[] // páginas de vídeos do TikTok de pessoas vendendo o produto, para referência
 }
 
 export type EtapaVideo =

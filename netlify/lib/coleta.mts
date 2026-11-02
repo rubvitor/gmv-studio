@@ -242,7 +242,114 @@ async function baixar(url: string, max: number): Promise<Uint8Array | null> {
   }
 }
 
-/** Baixa vídeos do TikTok pela página (quando o serviço da loja não dá o arquivo direto). */
+// ---------- download de vídeos do TikTok ----------
+// Mesmo método dos sites de download: a página pública do vídeo traz, num JSON embutido, os endereços do arquivo.
+// Ordem: 1) o download do próprio TikTok (downloadAddr), quando o criador permite; 2) o endereço do player;
+// 3) o ator de vídeos da Apify. Os vídeos servem só de referência de ritmo e demonstração; nunca são publicados.
+const DESKTOP =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+/** O item do vídeo dentro do HTML da página (formato atual e o antigo). */
+export function itemDoHtml(html: string): any | null {
+  const atual = html.match(/<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/)
+  if (atual) {
+    try {
+      const it = JSON.parse(atual[1])?.__DEFAULT_SCOPE__?.["webapp.video-detail"]?.itemInfo?.itemStruct
+      if (it) return it
+    } catch {}
+  }
+  const antigo = html.match(/<script[^>]*id="SIGI_STATE"[^>]*>([\s\S]*?)<\/script>/)
+  if (antigo) {
+    try {
+      const mod = JSON.parse(antigo[1])?.ItemModule
+      const k = mod && Object.keys(mod)[0]
+      if (k) return mod[k]
+    } catch {}
+  }
+  return null
+}
+
+/** O que o TikTok oferece para baixar este vídeo. downloadSetting 0 = o criador permite download. */
+export function opcoesDeDownload(item: any) {
+  const v = item?.video || {}
+  const ajuste = item?.author?.downloadSetting ?? item?.authorDownloadSetting
+  const permitido = ajuste == null ? item?.itemControl?.can_download !== false : Number(ajuste) === 0
+  const nativo = permitido && ehUrl(v.downloadAddr) ? (v.downloadAddr as string) : ""
+  const alternativos = [v.playAddr, ...((v.bitrateInfo || []) as any[]).map((b) => b?.PlayAddr?.UrlList?.[0])].filter(ehUrl)
+  return { permitido, nativo, alternativos: [...new Set(alternativos)], duracao: Number(v.duration) || undefined }
+}
+
+const curto = (u: string) => u.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60)
+
+type Pagina = { pagina: string; item: any | null; cookie: string; status: number }
+
+async function abrirPagina(pagina: string): Promise<Pagina> {
+  try {
+    const r = await fetch(pagina, { headers: { "user-agent": DESKTOP, "accept-language": "pt-BR,pt;q=0.9", accept: "text/html" } })
+    const cookies: string[] = (r.headers as any).getSetCookie?.() ?? []
+    const cookie = cookies.map((c) => c.split(";")[0]).join("; ")
+    return { pagina, item: r.ok ? itemDoHtml(await r.text()) : null, cookie, status: r.status }
+  } catch {
+    return { pagina, item: null, cookie: "", status: 0 }
+  }
+}
+
+async function baixarArquivoTikTok(u: string, cookie: string): Promise<Uint8Array | null> {
+  try {
+    const r = await fetch(u, { headers: { "user-agent": DESKTOP, referer: "https://www.tiktok.com/", ...(cookie ? { cookie } : {}) } })
+    if (!r.ok || Number(r.headers.get("content-length") || 0) > MAX_VIDEO) return null
+    const dados = new Uint8Array(await r.arrayBuffer())
+    return dados.length <= MAX_VIDEO && ehMp4(dados) ? dados : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Baixa até `quantos` vídeos das páginas dadas. Prefere os que o próprio TikTok deixa baixar; os outros entram
+ * só se faltar, pelo endereço do player e, por último, pela Apify.
+ */
+async function baixarVideos(paginas: string[], quantos: number, diag: string[]): Promise<Uint8Array[]> {
+  if (!quantos || !paginas.length) return []
+  const abertas = await Promise.all([...new Set(paginas)].slice(0, 8).map(abrirPagina))
+  const ordem = [
+    ...abertas.filter((a) => a.item && opcoesDeDownload(a.item).nativo),
+    ...abertas.filter((a) => !(a.item && opcoesDeDownload(a.item).nativo)),
+  ]
+  const out: Uint8Array[] = []
+  const semArquivo: string[] = []
+  for (const a of ordem) {
+    if (out.length >= quantos) break
+    if (!a.item) {
+      semArquivo.push(a.pagina)
+      continue
+    }
+    const o = opcoesDeDownload(a.item)
+    if (o.duracao && (o.duracao < 5 || o.duracao > 120)) continue
+    let dados: Uint8Array | null = null
+    let via = ""
+    if (o.nativo) {
+      dados = await baixarArquivoTikTok(o.nativo, a.cookie)
+      via = "download do próprio TikTok"
+    }
+    for (const u of o.alternativos) {
+      if (dados) break
+      dados = await baixarArquivoTikTok(u, a.cookie)
+      via = o.permitido ? "endereço do player" : "endereço do player (o criador desativou o download)"
+    }
+    if (dados) {
+      out.push(dados)
+      diag.push(`vídeo ${curto(a.pagina)}: baixado pelo ${via}`)
+    } else semArquivo.push(a.pagina)
+  }
+  if (out.length < quantos && semArquivo.length) {
+    diag.push(`${semArquivo.length} vídeo(s) sem arquivo direto do TikTok; tentando pela Apify`)
+    out.push(...(await baixarPelaPagina(semArquivo.slice(0, quantos - out.length), diag)))
+  }
+  return out.slice(0, quantos)
+}
+
+/** Baixa vídeos do TikTok pela Apify (último recurso). */
 async function baixarPelaPagina(paginas: string[], diag: string[]): Promise<Uint8Array[]> {
   if (!paginas.length) return []
   try {
@@ -288,7 +395,7 @@ async function buscarVideos(termo: string, quantos: number, diag: string[]): Pro
       .filter((v) => v.pagina && (!v.duracao || (v.duracao >= 5 && v.duracao <= 90)))
       .sort((a, b) => b.views - a.views)
     diag.push(`busca no TikTok por "${termo}": HTTP ${r.status}, ${candidatos.length} vídeo(s) aproveitável(is)`)
-    return [...new Set(candidatos.map((c) => c.pagina!))].slice(0, quantos)
+    return [...new Set(candidatos.map((c) => c.pagina!))].slice(0, quantos * 3)
   } catch (e) {
     diag.push(`busca no TikTok: ${String((e as any)?.message || e).slice(0, 160)}`)
     return []
@@ -309,7 +416,7 @@ async function anexar(p: Produto, dados: Uint8Array, nome: string, tipo: string,
  */
 export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: number } = {}) {
   const maxFotos = o.maxFotos ?? 8
-  const maxVideos = o.maxVideos ?? 3
+  const maxVideos = o.maxVideos ?? 2
   const diag: string[] = []
   p.diagnostico = diag
   const { url, produtoId } = await resolverLink(p.link)
@@ -375,25 +482,24 @@ export async function coletar(p: Produto, o: { maxFotos?: number; maxVideos?: nu
     await anexar(p, dados, `loja_foto_${String(++nf).padStart(2, "0")}.${tipo === "image/jpeg" ? "jpg" : tipo.split("/")[1]}`, tipo, "foto")
   }
 
+  // Vídeos de referência: arquivos diretos da loja; depois as páginas (links passados no cadastro, os da loja e,
+  // se ainda faltar, a busca pública do TikTok), preferindo os que o próprio TikTok deixa baixar.
+  const manuais = p.videos.length
+  const quero = Math.max(0, maxVideos - manuais)
   let nv = 0
-  const pendentes: string[] = []
+  const paginas: string[] = [...(p.linksVideos || [])]
   for (const v of d.videos) {
-    if (nv >= maxVideos) break
+    if (nv >= quero) break
     const dados = v.url ? await baixar(v.url, MAX_VIDEO) : null
     if (dados && ehMp4(dados)) {
       await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
-    } else if (v.pagina && pendentes.length < maxVideos) {
-      pendentes.push(v.pagina)
+    } else if (v.pagina) {
+      paginas.push(v.pagina)
     }
   }
-  if (nv < maxVideos && pendentes.length) {
-    for (const dados of await baixarPelaPagina(pendentes.slice(0, maxVideos - nv), diag)) {
-      await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
-    }
-  }
-  if (nv < maxVideos && busca && !p.videos.length) {
-    const paginas = await buscarVideos(busca, maxVideos - nv, diag)
-    for (const dados of await baixarPelaPagina(paginas, diag)) {
+  if (nv < quero && busca && paginas.length < (quero - nv) * 2) paginas.push(...(await buscarVideos(busca, quero - nv, diag)))
+  if (nv < quero && paginas.length) {
+    for (const dados of await baixarVideos(paginas, quero - nv, diag)) {
       await anexar(p, dados, `loja_video_${String(++nv).padStart(2, "0")}.mp4`, "video/mp4", "video")
     }
   }

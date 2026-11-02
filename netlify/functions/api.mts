@@ -73,6 +73,7 @@ export default async (req: Request, context: Context) => {
           fotos: [],
           videos: [],
           gerarAoTerminar: !!b.gerarAoTerminar,
+          linksVideos: linksDeVideo(b.linksVideos),
         }
         await produtos.salvar(p)
         return json(p, 201)
@@ -83,6 +84,7 @@ export default async (req: Request, context: Context) => {
       if (!acao && m === "PATCH") {
         const b = await req.json()
         for (const k of ["link", "nome", "observacoes", "prioridade"] as const) if (k in b) (p as any)[k] = b[k]
+        if ("linksVideos" in b) p.linksVideos = linksDeVideo(b.linksVideos)
         await produtos.salvar(p)
         return json(p)
       }
@@ -200,6 +202,12 @@ export default async (req: Request, context: Context) => {
   } catch (e: any) {
     return erro(String(e?.message || e), 500)
   }
+}
+
+/** Links de vídeos do TikTok (lista ou texto com um por linha), no máximo 6. */
+function linksDeVideo(x: unknown): string[] {
+  const lista = Array.isArray(x) ? x : String(x || "").split(/[\s,]+/)
+  return [...new Set(lista.map((u) => String(u).trim()).filter((u) => /^https:\/\/([a-z]+\.)?tiktok\.com\//i.test(u)))].slice(0, 6)
 }
 
 function resumo(a: Anuncio) {

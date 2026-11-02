@@ -223,6 +223,7 @@ function NovoProduto({ concluir, avisar, coleta }) {
   const [link, setLink] = useState("")
   const [buscar, setBuscar] = useState(coleta)
   const [gerarJa, setGerarJa] = useState(true)
+  const [linksVideos, setLinksVideos] = useState("")
   const [obs, setObs] = useState("")
   const [prioridade, setPrioridade] = useState(3)
   const [fotos, setFotos] = useState([])
@@ -237,7 +238,7 @@ function NovoProduto({ concluir, avisar, coleta }) {
     if (grande) return avisar(`O vídeo ${grande.name} passa de 80 MB. Use um trecho menor.`)
     setEnviando(true)
     try {
-      const p = await api("produtos", { method: "POST", body: JSON.stringify({ link, observacoes: obs, prioridade, gerarAoTerminar: gerarJa }) })
+      const p = await api("produtos", { method: "POST", body: JSON.stringify({ link, observacoes: obs, prioridade, gerarAoTerminar: gerarJa, linksVideos }) })
       const todos = [...fotos.map((f) => [f, "foto"]), ...videos.map((f) => [f, "video"])]
       for (let i = 0; i < todos.length; i++) {
         const [f, cat] = todos[i]
@@ -277,6 +278,8 @@ function NovoProduto({ concluir, avisar, coleta }) {
       <label class="campo">Vídeos de referência<span class="dica">Até 80 MB cada. Servem só para o ritmo e a demonstração.</span>
         <input type="file" accept="video/*" multiple onChange=${(e) => setVideos([...e.target.files])} /></label>
     </details>
+    <label class="campo">Vídeos de pessoas vendendo (opcional)<span class="dica">Links de vídeos do TikTok, um por linha. Sem links, o app procura sozinho os mais vistos. Servem só de referência e nunca são publicados.</span>
+      <textarea value=${linksVideos} onInput=${(e) => setLinksVideos(e.target.value)} placeholder="https://www.tiktok.com/@…/video/…"></textarea></label>
     <label class="campo">Observações<span class="dica">Fatos que não estão nas fotos, como funciona, o que evitar.</span>
       <textarea value=${obs} onInput=${(e) => setObs(e.target.value)}></textarea></label>
     <label class="campo">Prioridade na fila: ${prioridade}<input type="range" min="1" max="5" value=${prioridade} onInput=${(e) => setPrioridade(Number(e.target.value))} /></label>
